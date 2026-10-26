@@ -7,7 +7,8 @@ print(response.json())
 with open("test.txt", "rb") as dosya:
     response1 = requests.post(
         "http://192.168.89.128:8000/upload",
-        files={"dosya": dosya}
+        files={"dosya": dosya},
+        data={"goreli_yol": "deneme10.txt"}
     )
 print(response1.status_code)
 print(response1.json()["message"])
