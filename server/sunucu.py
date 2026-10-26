@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, Form
 import os, shutil, hashlib
 
 app = FastAPI()
@@ -8,9 +8,9 @@ def anasayfa():
     return {"mesaj": "merhaba"}
 
 @app.post("/upload")
-async def upload(dosya: UploadFile = File(...)):
-    os.makedirs("received_files", exist_ok = True)
-    file_path = os.path.join("received_files", os.path.basename(dosya.filename))
+async def upload(dosya: UploadFile = File(...), goreli_yol = Form(...)):
+    file_path = os.path.join("received_files", goreli_yol)
+    os.makedirs(os.path.dirname(file_path), exist_ok = True)
     with open(file_path, "wb") as dst:
         shutil.copyfileobj(dosya.file, dst)
 
@@ -28,3 +28,5 @@ async def upload(dosya: UploadFile = File(...)):
          "file_name": dosya.filename,
          "sha256": sha256.hexdigest(),
          "size": size  }
+
+// deneme bak
