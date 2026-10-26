@@ -1,4 +1,5 @@
-from fastapi import FastAPI, UploadFile, File, Form
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from pathlib import Path
 import os, shutil, hashlib
 
 app = FastAPI()
@@ -9,8 +10,12 @@ def anasayfa():
 
 @app.post("/upload")
 async def upload(dosya: UploadFile = File(...), goreli_yol = Form(...)):
-    file_path = os.path.join("received_files", goreli_yol)
-    os.makedirs(os.path.dirname(file_path), exist_ok = True)
+    base = Path("received_files").resolve()
+    file_path = (base / goreli_yol).resolve()
+    print("burada: ", file_path)
+    if not file_path.is_relative_to(base):
+        raise HTTPException(status_code=400, detail="Invalid file path")
+    os.makedirs(file_path.parent, exist_ok = True)
     with open(file_path, "wb") as dst:
         shutil.copyfileobj(dosya.file, dst)
 
@@ -29,4 +34,3 @@ async def upload(dosya: UploadFile = File(...), goreli_yol = Form(...)):
          "sha256": sha256.hexdigest(),
          "size": size  }
 
-// deneme bak
