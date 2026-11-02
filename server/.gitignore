@@ -4,3 +4,8 @@ __pycache__/
 .env
 received_files/
 .temporary/
+secrets.json
+credentials.json
+token.json
+pcloud_credentials.json
+pcloud_token.json

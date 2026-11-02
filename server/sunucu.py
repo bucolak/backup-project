@@ -1,6 +1,22 @@
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
-from pathlib import Path
-import os, shutil, hashlib
+import os, shutil, hashlib, tempfile, json
+
+from local_storage import LocalStorage
+from drive_storage import DriveStorage
+from pcloud_storage import PCloudStorage
+
+PROVIDERS = {
+    "local": LocalStorage,
+    "gdrive": DriveStorage,
+    "pcloud": PCloudStorage,
+}
+
+CONFIG_PATH = os.path.join(os.path.dirname(__file__), "server_config.json")
+with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+    config = json.load(f)
+
+provider_class = PROVIDERS[config["provider"]]
+storage = provider_class(**config.get("options", {}))
 
 app = FastAPI()
 
@@ -10,27 +26,31 @@ def anasayfa():
 
 @app.post("/upload")
 async def upload(dosya: UploadFile = File(...), goreli_yol = Form(...)):
-    base = Path("received_files").resolve()
-    file_path = (base / goreli_yol).resolve()
-    print("burada: ", file_path)
-    if not file_path.is_relative_to(base):
-        raise HTTPException(status_code=400, detail="Invalid file path")
-    os.makedirs(file_path.parent, exist_ok = True)
-    with open(file_path, "wb") as dst:
-        shutil.copyfileobj(dosya.file, dst)
+    with tempfile.NamedTemporaryFile(delete=False) as tmp:
+        shutil.copyfileobj(dosya.file, tmp)
+        temp_path = tmp.name
 
-    sha256 = hashlib.sha256()
-    with open(file_path, "rb") as saved_file: 
-        while True:
-            parca = saved_file.read(4096)
+    try:
+        sha256 = hashlib.sha256()
+        with open(temp_path, "rb") as f: 
+            while True:
+                parca = f.read(4096)
 
-            if not parca:
-                break
-            sha256.update(parca)
-    size = os.path.getsize(file_path)
+                if not parca:
+                    break
+                sha256.update(parca)
+        size = os.path.getsize(temp_path)
+        try:
+            storage.save(temp_path, goreli_yol)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
     return {
          "message": "File saved", 
-         "file_name": dosya.filename,
+         "file_name": goreli_yol,
          "sha256": sha256.hexdigest(),
          "size": size  }
 
