@@ -9,3 +9,4 @@ __pycache__/
 # Backup test data
 source/
 destination/
+src/config.json
