@@ -9,3 +9,5 @@ credentials.json
 token.json
 pcloud_credentials.json
 pcloud_token.json
+backup.db
+backup.db
