@@ -26,7 +26,7 @@ def dosya_gonder(tam_yol, goreli):
             files={"dosya": dosya},
             data={"goreli_yol": goreli}
         )
-    except requests.exceptions.RequestException:
+    except requests.exceptions.RequestException as hata:
         print("  ERROR: connection problem:", hata)
         return False
 
