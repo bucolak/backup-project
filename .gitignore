@@ -11,3 +11,5 @@ source/
 destination/
 src/config.json
 backup.log
+windows-service/backup-agent.exe
+windows-service/logs/

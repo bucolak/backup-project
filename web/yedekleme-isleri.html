@@ -1,0 +1,348 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Yedekleme İşleri</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+</head>
+<body>
+<style>
+/* Düzen: tek sütun; üstte başlık ve + butonu, altında iş listesi, en altta config.json önizlemesi */
+:root {
+  --bg: #f4f6f8;
+  --surface: #ffffff;
+  --surface-2: #eef1f4;
+  --line: #d6dce2;
+  --fg: #16202a;
+  --muted: #5a6875;
+  --accent: #0f6e78;
+  --accent-fg: #ffffff;
+  --accent-soft: #dcefF0;
+  --err: #b3261e;
+  --err-soft: #fbe4e2;
+  --font-body: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", "Cascadia Mono", Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f1418; --surface: #161d22; --surface-2: #1d262d; --line: #2b363f;
+    --fg: #e4e9ed; --muted: #97a5b1; --accent: #5cc3cc; --accent-fg: #0b1a1c;
+    --accent-soft: #143238; --err: #f28b82; --err-soft: #3a1a18; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f1418; --surface: #161d22; --surface-2: #1d262d; --line: #2b363f;
+  --fg: #e4e9ed; --muted: #97a5b1; --accent: #5cc3cc; --accent-fg: #0b1a1c;
+  --accent-soft: #143238; --err: #f28b82; --err-soft: #3a1a18; color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+body {
+  background: var(--bg); color: var(--fg);
+  font-family: var(--font-body); font-size: 15px; line-height: 1.5;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 24px 48px;
+}
+.wrap { max-width: 760px; margin: 0 auto; display: flex; flex-direction: column; gap: 20px; }
+h1, h2 { margin: 0; text-wrap: balance; }
+.mono { font-family: var(--font-mono); font-size: 13px; }
+.muted { color: var(--muted); }
+
+header { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+header h1 { font-size: 22px; font-weight: 600; }
+header p { margin: 2px 0 0; color: var(--muted); font-size: 14px; }
+
+button { font: inherit; cursor: pointer; }
+button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.add-btn {
+  width: 48px; height: 48px; border-radius: 50%; border: 0;
+  background: var(--accent); color: var(--accent-fg);
+  font-size: 28px; line-height: 1; display: grid; place-items: center; flex: none;
+}
+.add-btn[aria-expanded="true"] { transform: rotate(45deg); }
+@media (prefers-reduced-motion: no-preference) { .add-btn { transition: transform .15s ease; } }
+
+.box { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; }
+
+/* Form */
+form { padding: 18px; display: flex; flex-direction: column; gap: 14px; }
+form h2 { font-size: 16px; font-weight: 600; }
+.field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.field label, .field legend { font-size: 13px; font-weight: 500; color: var(--muted); }
+.row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+input[type="text"], input[type="time"], input[type="number"], select {
+  font: inherit; color: var(--fg); background: var(--surface); border: 1px solid var(--line);
+  border-radius: 6px; padding: 8px 10px; min-height: 40px; width: 100%; min-width: 0;
+}
+input.path { font-family: var(--font-mono); font-size: 14px; }
+fieldset { border: 0; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 6px; }
+.days { display: flex; flex-wrap: wrap; gap: 6px; }
+.days label { cursor: pointer; }
+.days input { position: absolute; opacity: 0; pointer-events: none; }
+.days span {
+  display: inline-block; min-width: 48px; text-align: center; padding: 6px 8px;
+  border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--muted); font-size: 14px;
+}
+.days input:checked + span { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); font-weight: 500; }
+.days input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }
+.hint { font-size: 13px; color: var(--muted); margin: 0; }
+.error { margin: 0; padding: 8px 12px; border-radius: 6px; background: var(--err-soft); color: var(--err); font-size: 14px; }
+.actions { display: flex; gap: 10px; justify-content: flex-end; flex-wrap: wrap; }
+.btn { border-radius: 6px; padding: 8px 16px; min-height: 40px; border: 1px solid var(--line); background: var(--surface); color: var(--fg); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); font-weight: 500; }
+
+/* İş listesi */
+.section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.section-head h2 { font-size: 15px; font-weight: 600; }
+.list { display: flex; flex-direction: column; }
+.job { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 6px 16px; align-items: center; padding: 14px 16px; }
+.job + .job { border-top: 1px solid var(--line); }
+.route { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.route span { overflow-wrap: anywhere; }
+.route .to { color: var(--muted); }
+.route .to::before { content: "→ "; }
+.chip { font-size: 13px; padding: 3px 10px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); white-space: nowrap; font-weight: 500; }
+.del { border: 0; background: none; color: var(--muted); font-size: 20px; line-height: 1; padding: 4px 8px; border-radius: 6px; }
+.del:hover { color: var(--err); background: var(--err-soft); }
+.empty { padding: 28px 16px; text-align: center; color: var(--muted); }
+.empty b { color: var(--fg); font-weight: 500; }
+
+/* config.json önizleme */
+pre { margin: 0; padding: 14px 16px; overflow-x: auto; font-family: var(--font-mono); font-size: 12.5px; line-height: 1.55; background: var(--surface-2); border-radius: 0 0 10px 10px; }
+.code-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 16px; border-bottom: 1px solid var(--line); }
+.copied { font-size: 13px; color: var(--accent); }
+
+@media (max-width: 520px) {
+  .row { grid-template-columns: minmax(0, 1fr); }
+  .job { grid-template-columns: minmax(0, 1fr) auto; }
+  .job .chip { grid-column: 1; justify-self: start; }
+  .job .del { grid-row: 1; grid-column: 2; }
+}
+</style>
+
+<div class="wrap">
+  <header>
+    <div>
+      <h1>Yedekleme İşleri</h1>
+      <p>Kaynak, hedef ve zamanlamayı seç; servisin config.json dosyası aşağıda oluşur.</p>
+    </div>
+    <button class="add-btn" id="add-btn" type="button" aria-expanded="false" aria-controls="job-form" aria-label="Yeni yedekleme ekle">+</button>
+  </header>
+
+  <form class="box" id="job-form" hidden novalidate>
+    <h2>Yeni yedekleme</h2>
+
+    <div class="field">
+      <label for="source">Kaynak klasör</label>
+      <input class="path" type="text" id="source" placeholder="C:\Belgeler" autocomplete="off" spellcheck="false">
+    </div>
+    <div class="field">
+      <label for="target">Hedef klasör</label>
+      <input class="path" type="text" id="target" placeholder="D:\Yedek\Belgeler" autocomplete="off" spellcheck="false">
+    </div>
+
+    <div class="row">
+      <div class="field">
+        <label for="type">Zamanlama</label>
+        <select id="type">
+          <option value="daily">Her gün</option>
+          <option value="weekly">Haftanın belirli günleri</option>
+          <option value="interval">Belirli aralıkla</option>
+        </select>
+      </div>
+      <div class="field" id="time-field">
+        <label for="time">Saat</label>
+        <input type="time" id="time" value="02:00">
+      </div>
+      <div class="field" id="minutes-field" hidden>
+        <label for="minutes">Kaç dakikada bir</label>
+        <input type="number" id="minutes" min="1" step="1" value="30">
+      </div>
+    </div>
+
+    <fieldset id="days-field" hidden>
+      <legend>Günler</legend>
+      <div class="days" id="days"></div>
+    </fieldset>
+
+    <p class="hint" id="schedule-hint"></p>
+    <p class="error" id="form-error" role="alert" hidden></p>
+
+    <div class="actions">
+      <button class="btn" type="button" id="cancel-btn">Vazgeç</button>
+      <button class="btn primary" type="submit">Ekle</button>
+    </div>
+  </form>
+
+  <section class="section-head" aria-labelledby="list-title">
+    <h2 id="list-title">İşler</h2>
+    <span class="muted" id="count"></span>
+  </section>
+  <div class="box list" id="list"></div>
+
+  <div class="box">
+    <div class="code-head">
+      <span class="mono">config.json</span>
+      <div style="display:flex;align-items:center;gap:10px">
+        <span class="copied" id="copied" hidden>Kopyalandı</span>
+        <button class="btn" type="button" id="copy-btn">Kopyala</button>
+      </div>
+    </div>
+    <pre id="config"></pre>
+  </div>
+  <p class="hint">Kopyaladığın metni service.py'nin yanındaki config.json dosyasına yapıştırıp kaydet. Servis değişikliği kendisi fark eder.</p>
+</div>
+
+<script>
+const DAYS = ["pzt", "sal", "car", "per", "cum", "cmt", "paz"];
+const DAY_LABELS = ["Pzt", "Sal", "Çar", "Per", "Cum", "Cmt", "Paz"];
+const STORE_KEY = "backup-jobs";
+
+const $ = (id) => document.getElementById(id);
+const form = $("job-form");
+const addBtn = $("add-btn");
+
+let jobs = [];
+try { jobs = JSON.parse(localStorage.getItem(STORE_KEY)) || []; } catch (e) { jobs = []; }
+
+function save() {
+  try { localStorage.setItem(STORE_KEY, JSON.stringify(jobs)); } catch (e) { /* tarayıcı izin vermezse sadece bu oturumda kalır */ }
+}
+
+// Gün seçimi butonları
+$("days").innerHTML = DAYS.map((d, i) =>
+  `<label><input type="checkbox" id="day-${d}" value="${d}"><span>${DAY_LABELS[i]}</span></label>`
+).join("");
+
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+function scheduleText(s) {
+  if (s.type === "daily") return "Her gün " + s.time;
+  if (s.type === "weekly") return s.days.map((d) => DAY_LABELS[DAYS.indexOf(d)]).join(", ") + " " + s.time;
+  return s.minutes + " dakikada bir";
+}
+
+function updateScheduleFields() {
+  const type = $("type").value;
+  $("time-field").hidden = type === "interval";
+  $("minutes-field").hidden = type !== "interval";
+  $("days-field").hidden = type !== "weekly";
+  $("schedule-hint").textContent = {
+    daily: "Saat geçtiyse ve bugün çalışmadıysa aynı gün içinde çalışır.",
+    weekly: "Seçilen günlerde, belirtilen saatte çalışır.",
+    interval: "Servis açılınca ilk kez çalışır, sonra her aralıkta tekrar eder."
+  }[type];
+}
+
+// Yolları karşılaştırmak için: Windows'ta büyük/küçük harf ve sondaki \ fark etmez
+function normPath(p) {
+  return p.trim().replace(/\//g, "\\").replace(/\\+$/, "").toLowerCase();
+}
+
+function validate(job) {
+  if (!job.source) return "Kaynak klasörü yaz.";
+  if (!job.target) return "Hedef klasörü yaz.";
+  const src = normPath(job.source), dst = normPath(job.target);
+  if (src === dst) return "Kaynak ve hedef aynı klasör olamaz.";
+  if ((dst + "\\").startsWith(src + "\\")) return "Hedef, kaynağın içinde olamaz; yedekler tekrar tekrar kopyalanır.";
+  if (jobs.some((j) => j.source === job.source && j.target === job.target)) return "Bu kaynak ve hedefle bir iş zaten var.";
+
+  const s = job.schedule;
+  if (s.type !== "interval" && !/^([01]\d|2[0-3]):[0-5]\d$/.test(s.time || "")) return "Saati seç.";
+  if (s.type === "weekly" && !s.days.length) return "En az bir gün seç.";
+  if (s.type === "interval" && !(Number.isInteger(s.minutes) && s.minutes > 0)) return "Dakika pozitif bir tam sayı olmalı.";
+  return null;
+}
+
+function readForm() {
+  const type = $("type").value;
+  const schedule = { type };
+  if (type === "interval") {
+    schedule.minutes = Number($("minutes").value);
+  } else {
+    schedule.time = $("time").value;
+  }
+  if (type === "weekly") {
+    schedule.days = DAYS.filter((d) => $("day-" + d).checked);
+  }
+  return { source: $("source").value.trim(), target: $("target").value.trim(), schedule };
+}
+
+function render() {
+  $("count").textContent = jobs.length ? jobs.length + " iş" : "";
+  $("list").innerHTML = jobs.length
+    ? jobs.map((j, i) => `
+      <div class="job">
+        <div class="route mono"><span>${esc(j.source)}</span><span class="to">${esc(j.target)}</span></div>
+        <span class="chip">${esc(scheduleText(j.schedule))}</span>
+        <button class="del" type="button" data-i="${i}" aria-label="${esc(j.source)} işini sil">×</button>
+      </div>`).join("")
+    : `<div class="empty"><b>Henüz yedekleme yok.</b><br>Sağ üstteki + ile ilk yedeklemeyi ekle.</div>`;
+  $("config").textContent = JSON.stringify({ jobs }, null, 4);
+}
+
+function openForm(open) {
+  form.hidden = !open;
+  addBtn.setAttribute("aria-expanded", String(open));
+  addBtn.setAttribute("aria-label", open ? "Formu kapat" : "Yeni yedekleme ekle");
+  $("form-error").hidden = true;
+  if (open) $("source").focus();
+}
+
+addBtn.addEventListener("click", () => openForm(form.hidden));
+$("cancel-btn").addEventListener("click", () => openForm(false));
+$("type").addEventListener("change", updateScheduleFields);
+
+form.addEventListener("submit", (e) => {
+  e.preventDefault();
+  const job = readForm();
+  const error = validate(job);
+  if (error) {
+    $("form-error").textContent = error;
+    $("form-error").hidden = false;
+    return;
+  }
+  jobs.push(job);
+  save();
+  render();
+  form.reset();
+  updateScheduleFields();
+  openForm(false);
+});
+
+$("list").addEventListener("click", (e) => {
+  const btn = e.target.closest(".del");
+  if (!btn) return;
+  jobs.splice(Number(btn.dataset.i), 1);
+  save();
+  render();
+});
+
+$("copy-btn").addEventListener("click", () => {
+  const text = $("config").textContent;
+  const done = () => { $("copied").hidden = false; setTimeout(() => { $("copied").hidden = true; }, 1600); };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(done, selectConfig);
+  } else {
+    selectConfig();
+  }
+});
+
+function selectConfig() {
+  const range = document.createRange();
+  range.selectNodeContents($("config"));
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
+}
+
+updateScheduleFields();
+render();
+</script>
+</body>
+</html>
