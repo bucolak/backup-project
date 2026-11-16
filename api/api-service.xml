@@ -1,0 +1,26 @@
+<service>
+  <!-- Windows'un servisi tanıdığı kısa ad -->
+  <id>backup-api</id>
+
+  <!-- Hizmetler (services.msc) listesinde görünen ad ve açıklama -->
+  <name>Backup API</name>
+  <description>Backup project API and web panel</description>
+
+  <!-- venv'deki Python ile uvicorn'u başlat (terminalde yazdığımız komutun aynısı) -->
+  <executable>C:\Users\W10\Desktop\backup-project\venv\Scripts\python.exe</executable>
+  <arguments>-m uvicorn api:app --host 0.0.0.0 --port 8001</arguments>
+  <workingdirectory>C:\Users\W10\Desktop\backup-project\api</workingdirectory>
+
+  <!-- Bilgisayar açılınca kendiliğinden başla -->
+  <startmode>Automatic</startmode>
+
+  <!-- Çökerse 10 saniye sonra yeniden başlat -->
+  <onfailure action="restart" delay="10 sec"/>
+
+  <!-- uvicorn'un ekrana yazdıkları (istekler ve hatalar) bu klasördeki log dosyalarına -->
+  <logpath>%BASE%\logs</logpath>
+  <log mode="roll-by-size">
+    <sizeThreshold>10240</sizeThreshold>
+    <keepFiles>5</keepFiles>
+  </log>
+</service>

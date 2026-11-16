@@ -27,6 +27,17 @@ def web():
     return FileResponse(WEB_PATH)
 
 
+# jobs tablosunda olması gereken sütunlar. Yeni sütun eklenince buraya da yazılır;
+# eski veritabanında yoksa connect() onu kendisi ekler (migration).
+JOB_COLUMNS = {
+    "client_id": "TEXT",
+    "source": "TEXT",
+    "target_type": "TEXT DEFAULT 'local'",
+    "target": "TEXT",
+    "schedule": "TEXT"
+}
+
+
 def connect():
     connection = sqlite3.connect(DB_PATH)
     connection.execute("""
@@ -34,11 +45,19 @@ def connect():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             client_id TEXT,
             source TEXT,
-            target_type TEXT,
+            target_type TEXT DEFAULT 'local',
             target TEXT,
             schedule TEXT
         )
     """)
+
+    # Migration: tablo eski yapıdaysa eksik sütunları ekle (veriler korunur)
+    existing = [row[1] for row in connection.execute("PRAGMA table_info(jobs)")]
+    for name, column_type in JOB_COLUMNS.items():
+        if name not in existing:
+            connection.execute("ALTER TABLE jobs ADD COLUMN %s %s" % (name, column_type))
+    connection.commit()
+
     return connection
 
 

@@ -231,9 +231,12 @@ let editIndex = null;   // düzenlenen işin sırası; yeni iş eklenirken null
 // İşleri API'den al
 function load() {
   fetch(API_URL + "/jobs")
-    .then((response) => response.json())
+    .then((response) => {
+      if (!response.ok) throw new Error("API hata döndürdü: HTTP " + response.status);
+      return response.json();
+    })
     .then((data) => { jobs = data; render(); })
-    .catch(() => showApiError());
+    .catch((error) => showApiError("İşler alınamadı. " + error.message));
 }
 
 // İşlerin son halini API'ye gönder
@@ -242,11 +245,19 @@ function save() {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(jobs)
-  }).catch(() => showApiError());
+  })
+    .then((response) => {
+      if (!response.ok) throw new Error("API hata döndürdü: HTTP " + response.status);
+      $("api-error").hidden = true;
+    })
+    .catch((error) => {
+      showApiError("Kaydedilemedi. " + error.message);
+      load();   // ekranda kaydedilmemiş bir iş kalmasın: listeyi API'deki gerçek haliyle yenile
+    });
 }
 
-function showApiError() {
-  $("api-error").textContent = "API'ye ulaşılamadı: " + API_URL;
+function showApiError(message) {
+  $("api-error").textContent = message;
   $("api-error").hidden = false;
 }
 

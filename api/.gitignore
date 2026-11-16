@@ -1,2 +1,4 @@
 backup.db
 __pycache__/
+api-service.exe
+logs/

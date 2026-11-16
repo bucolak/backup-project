@@ -53,6 +53,7 @@ class PCloudStorage:
         if data["result"] != 0:
             raise RuntimeError("pCloud error: " + str(data.get("error")))
         print(f"Done: {file_name} in {time.time() - start:.1f} s", flush=True)
+        return data   # pCloud'un cevabı: yüklenen dosyanın bilgileri ve hash'leri (checksums)
 
     def save(self, temp_path, goreli_yol):
         parts = goreli_yol.split("/")
@@ -64,4 +65,4 @@ class PCloudStorage:
             parent_id = self.get_or_create_folder(folder_name, parent_id)
 
         file_name = parts[-1]
-        self.upload_with_progress(temp_path, parent_id, file_name)
+        return self.upload_with_progress(temp_path, parent_id, file_name)

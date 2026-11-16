@@ -169,6 +169,7 @@ config_mtime = None  # config'in en son okunduğu andaki değiştirilme zamanı
 config_errors = []   # config'teki hatalı kayıtlar (status.json'da gösterilir)
 
 last_runs = {}   # (source, target) -> işin son çalıştığı zaman
+last_schedules = {}   # (source, target) -> iş son çalıştığında zamanlaması neydi
 
 running = {}                      # (source, target) -> {"pending", "failed_paths", "retries_left"}
 retries = {}                      # (source, target) -> {"paths", "at", "left"}: bekleyen yeniden denemeler
@@ -269,6 +270,8 @@ def load_state():
 
             if entry.get("last_run"):
                 last_runs[key] = datetime.fromisoformat(entry["last_run"])
+            if entry.get("schedule"):
+                last_schedules[key] = entry["schedule"]
 
             retry = entry.get("retry")
             if retry:
@@ -290,6 +293,7 @@ def save_state():
             retry = retries.get(key)
             data[state_key(key)] = {
                 "last_run": last_run.isoformat(timespec="seconds") if last_run else None,
+                "schedule": last_schedules.get(key),
                 "retry": {
                     "paths": list(retry["paths"]),
                     "at": datetime.fromtimestamp(retry["at"]).isoformat(timespec="seconds"),
@@ -682,11 +686,32 @@ def upload_one_pcloud(path, job, info):
     info["size"] = os.path.getsize(path)
     info["status"] = "uploading"
 
-    storage = PCloudStorage(parts[0], token_file=PCLOUD_TOKEN_PATH)
-    storage.save(path, remote_path)
+    # Yüklemeden önce kaynağın parmak izlerini hesapla (pCloud bölgesine göre SHA-256 ya da SHA-1 veriyor)
+    sha256 = hashlib.sha256()
+    sha1 = hashlib.sha1()
+    with open(lp(path), "rb") as f:
+        while True:
+            chunk = f.read(CHUNK_SIZE)
+            if not chunk:
+                break
+            sha256.update(chunk)
+            sha1.update(chunk)
 
+    storage = PCloudStorage(parts[0], token_file=PCLOUD_TOKEN_PATH)
+    result = storage.save(path, remote_path)
     info["copied"] = info["size"]
-    log.info("Uploaded to pCloud: %s -> %s", path, info["target"])
+
+    # Doğrulama: pCloud'un aldığı dosya için hesapladığı hash, bizimkiyle aynı mı?
+    info["status"] = "verifying"
+    checksums = result["checksums"][0]
+    if "sha256" in checksums:
+        same = checksums["sha256"].lower() == sha256.hexdigest()
+    else:
+        same = checksums["sha1"].lower() == sha1.hexdigest()
+    if not same:
+        raise IOError("pCloud verification failed: " + info["target"])
+
+    log.info("Uploaded and verified on pCloud: %s -> %s", path, info["target"])
 
 
 def list_files(source):
@@ -703,6 +728,10 @@ def list_files(source):
 def is_due(job, key, now):
     schedule = job["schedule"]
     last_run = last_runs.get(key)
+
+    # Zamanlama, iş son çalıştığından beri değiştiyse iş yeni bir iş gibi sayılır
+    if key in last_schedules and last_schedules[key] != schedule:
+        last_run = None
 
     if schedule["type"] == "interval":
         if last_run is None:
@@ -947,6 +976,7 @@ def run():
                         with running_lock:
                             retries.pop(key, None)
                             last_runs[key] = now
+                            last_schedules[key] = job["schedule"]
                         save_state()
                         log.info("Job started: %s -> %s", job["source"], job["target"])
                         paths = list_files(job["source"])

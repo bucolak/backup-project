@@ -14,7 +14,20 @@
             "target": "backup-project/windows/test",
             "schedule": {
                 "type": "weekly",
-                "time": "02:00",
+                "time": "15:53",
+                "days": [
+                    "pzt"
+                ]
+            }
+        },
+        {
+            "client_id": "windows-pc",
+            "source": "C:\\YedekTest/Kaynak",
+            "target_type": "pcloud",
+            "target": "backup-project/windows/test",
+            "schedule": {
+                "type": "weekly",
+                "time": "15:58",
                 "days": [
                     "pzt"
                 ]
