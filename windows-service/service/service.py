@@ -27,7 +27,7 @@ WORKERS = 4
 CHUNK_SIZE = 1024 * 1024   # 1 MB
 DEFAULT_RETRY = {"count": 3, "delay": 60}   # 3 kez, 60 saniye arayla
 ACCESS_RECHECK = 60   # kaynak/hedef izin sorunu varsa kaç saniyede bir tekrar bakılacak
-API_URL = "http://192.168.89.128:8001"   # işlerin tutulduğu API'nin adresi
+API_URL = "http://127.0.0.1:8001"   # API aynı bilgisayarda çalışıyor
 API_CHECK_SECONDS = 30                    # API'ye kaç saniyede bir sorulacak
 LOG_NAME_RE = re.compile(r"^log_(\d{4}-\d{2}-\d{2})\.jsonl$")
 

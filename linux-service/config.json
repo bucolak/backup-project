@@ -1,0 +1,18 @@
+{
+    "settings": {
+        "log_dir": "logs",
+        "log_retention_days": 30,
+        "history_max": 1000,
+        "min_free_mb": 100
+    },
+    "jobs": [
+        {
+            "source": "C:\\YedekTest\\Kaynak",
+            "target": "C:\\YedekTest\\Hedef",
+            "schedule": {
+                "type": "daily",
+                "time": "12:00"
+            }
+        }
+    ]
+}

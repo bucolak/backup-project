@@ -38,6 +38,7 @@
 }
 
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 body {
   background: var(--bg); color: var(--fg);
   font-family: var(--font-body); font-size: 15px; line-height: 1.5;
@@ -98,7 +99,7 @@ fieldset { border: 0; padding: 0; margin: 0; display: flex; flex-direction: colu
 .section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
 .section-head h2 { font-size: 15px; font-weight: 600; }
 .list { display: flex; flex-direction: column; }
-.job { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 6px 16px; align-items: center; padding: 14px 16px; }
+.job { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; gap: 6px 12px; align-items: center; padding: 14px 16px; }
 .job + .job { border-top: 1px solid var(--line); }
 .route { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .route span { overflow-wrap: anywhere; }
@@ -107,6 +108,8 @@ fieldset { border: 0; padding: 0; margin: 0; display: flex; flex-direction: colu
 .chip { font-size: 13px; padding: 3px 10px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); white-space: nowrap; font-weight: 500; }
 .del { border: 0; background: none; color: var(--muted); font-size: 20px; line-height: 1; padding: 4px 8px; border-radius: 6px; }
 .del:hover { color: var(--err); background: var(--err-soft); }
+.edit { border: 1px solid var(--line); background: var(--surface); color: var(--fg); font-size: 13px; padding: 4px 10px; border-radius: 6px; }
+.edit:hover { border-color: var(--accent); color: var(--accent); }
 .empty { padding: 28px 16px; text-align: center; color: var(--muted); }
 .empty b { color: var(--fg); font-weight: 500; }
 
@@ -117,9 +120,9 @@ pre { margin: 0; padding: 14px 16px; overflow-x: auto; font-family: var(--font-m
 
 @media (max-width: 520px) {
   .row { grid-template-columns: minmax(0, 1fr); }
-  .job { grid-template-columns: minmax(0, 1fr) auto; }
+  .job { grid-template-columns: minmax(0, 1fr) auto auto; }
+  .job .route { grid-column: 1 / -1; }
   .job .chip { grid-column: 1; justify-self: start; }
-  .job .del { grid-row: 1; grid-column: 2; }
 }
 </style>
 
@@ -127,13 +130,13 @@ pre { margin: 0; padding: 14px 16px; overflow-x: auto; font-family: var(--font-m
   <header>
     <div>
       <h1>Yedekleme İşleri</h1>
-      <p>Kaynak, hedef ve zamanlamayı seç; servisin config.json dosyası aşağıda oluşur.</p>
+      <p>Kaynak, hedef ve zamanlamayı seç; değişiklikler API'ye kaydedilir.</p>
     </div>
     <button class="add-btn" id="add-btn" type="button" aria-expanded="false" aria-controls="job-form" aria-label="Yeni yedekleme ekle">+</button>
   </header>
 
   <form class="box" id="job-form" hidden novalidate>
-    <h2>Yeni yedekleme</h2>
+    <h2 id="form-title">Yeni yedekleme</h2>
 
     <div class="field">
       <label for="source">Kaynak klasör</label>
@@ -173,9 +176,11 @@ pre { margin: 0; padding: 14px 16px; overflow-x: auto; font-family: var(--font-m
 
     <div class="actions">
       <button class="btn" type="button" id="cancel-btn">Vazgeç</button>
-      <button class="btn primary" type="submit">Ekle</button>
+      <button class="btn primary" type="submit" id="submit-btn">Ekle</button>
     </div>
   </form>
+
+  <p class="error" id="api-error" role="alert" hidden></p>
 
   <section class="section-head" aria-labelledby="list-title">
     <h2 id="list-title">İşler</h2>
@@ -193,23 +198,41 @@ pre { margin: 0; padding: 14px 16px; overflow-x: auto; font-family: var(--font-m
     </div>
     <pre id="config"></pre>
   </div>
-  <p class="hint">Kopyaladığın metni service.py'nin yanındaki config.json dosyasına yapıştırıp kaydet. Servis değişikliği kendisi fark eder.</p>
+  <p class="hint">Değişiklikler API'ye kaydedilir; Windows servisi 30 saniye içinde alır. Bu önizleme sadece bilgi içindir.</p>
 </div>
 
 <script>
 const DAYS = ["pzt", "sal", "car", "per", "cum", "cmt", "paz"];
 const DAY_LABELS = ["Pzt", "Sal", "Çar", "Per", "Cum", "Cmt", "Paz"];
-const STORE_KEY = "backup-jobs";
+const API_URL = "http://127.0.0.1:8001";   // API aynı bilgisayarda çalışıyor
 
 const $ = (id) => document.getElementById(id);
 const form = $("job-form");
 const addBtn = $("add-btn");
 
 let jobs = [];
-try { jobs = JSON.parse(localStorage.getItem(STORE_KEY)) || []; } catch (e) { jobs = []; }
+let editIndex = null;   // düzenlenen işin sırası; yeni iş eklenirken null
 
+// İşleri API'den al
+function load() {
+  fetch(API_URL + "/jobs")
+    .then((response) => response.json())
+    .then((data) => { jobs = data; render(); })
+    .catch(() => showApiError());
+}
+
+// İşlerin son halini API'ye gönder
 function save() {
-  try { localStorage.setItem(STORE_KEY, JSON.stringify(jobs)); } catch (e) { /* tarayıcı izin vermezse sadece bu oturumda kalır */ }
+  fetch(API_URL + "/jobs", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(jobs)
+  }).catch(() => showApiError());
+}
+
+function showApiError() {
+  $("api-error").textContent = "API'ye ulaşılamadı: " + API_URL;
+  $("api-error").hidden = false;
 }
 
 // Gün seçimi butonları
@@ -250,7 +273,7 @@ function validate(job) {
   const src = normPath(job.source), dst = normPath(job.target);
   if (src === dst) return "Kaynak ve hedef aynı klasör olamaz.";
   if ((dst + "\\").startsWith(src + "\\")) return "Hedef, kaynağın içinde olamaz; yedekler tekrar tekrar kopyalanır.";
-  if (jobs.some((j) => j.source === job.source && j.target === job.target)) return "Bu kaynak ve hedefle bir iş zaten var.";
+  if (jobs.some((j, i) => i !== editIndex && j.source === job.source && j.target === job.target)) return "Bu kaynak ve hedefle bir iş zaten var.";
 
   const s = job.schedule;
   if (s.type !== "interval" && !/^([01]\d|2[0-3]):[0-5]\d$/.test(s.time || "")) return "Saati seç.";
@@ -280,13 +303,31 @@ function render() {
       <div class="job">
         <div class="route mono"><span>${esc(j.source)}</span><span class="to">${esc(j.target)}</span></div>
         <span class="chip">${esc(scheduleText(j.schedule))}</span>
+        <button class="edit" type="button" data-i="${i}">Düzenle</button>
         <button class="del" type="button" data-i="${i}" aria-label="${esc(j.source)} işini sil">×</button>
       </div>`).join("")
     : `<div class="empty"><b>Henüz yedekleme yok.</b><br>Sağ üstteki + ile ilk yedeklemeyi ekle.</div>`;
   $("config").textContent = JSON.stringify({ jobs }, null, 4);
 }
 
-function openForm(open) {
+// Formu bir işin değerleriyle doldur (düzenleme için)
+function fillForm(job) {
+  $("source").value = job.source;
+  $("target").value = job.target;
+  $("type").value = job.schedule.type;
+  if (job.schedule.time) $("time").value = job.schedule.time;
+  if (job.schedule.minutes) $("minutes").value = job.schedule.minutes;
+  DAYS.forEach((d) => { $("day-" + d).checked = (job.schedule.days || []).includes(d); });
+  updateScheduleFields();
+}
+
+function openForm(open, index = null) {
+  editIndex = open ? index : null;
+  form.reset();
+  updateScheduleFields();
+  if (editIndex !== null) fillForm(jobs[editIndex]);
+  $("form-title").textContent = editIndex !== null ? "Yedeklemeyi düzenle" : "Yeni yedekleme";
+  $("submit-btn").textContent = editIndex !== null ? "Kaydet" : "Ekle";
   form.hidden = !open;
   addBtn.setAttribute("aria-expanded", String(open));
   addBtn.setAttribute("aria-label", open ? "Formu kapat" : "Yeni yedekleme ekle");
@@ -294,7 +335,7 @@ function openForm(open) {
   if (open) $("source").focus();
 }
 
-addBtn.addEventListener("click", () => openForm(form.hidden));
+addBtn.addEventListener("click", () => openForm(form.hidden || editIndex !== null));
 $("cancel-btn").addEventListener("click", () => openForm(false));
 $("type").addEventListener("change", updateScheduleFields);
 
@@ -307,18 +348,26 @@ form.addEventListener("submit", (e) => {
     $("form-error").hidden = false;
     return;
   }
-  jobs.push(job);
+  if (editIndex !== null) {
+    jobs[editIndex] = job;   // düzenlenen işin yerine yeni halini koy
+  } else {
+    jobs.push(job);
+  }
   save();
   render();
-  form.reset();
-  updateScheduleFields();
   openForm(false);
 });
 
 $("list").addEventListener("click", (e) => {
+  const editBtn = e.target.closest(".edit");
+  if (editBtn) {
+    openForm(true, Number(editBtn.dataset.i));
+    return;
+  }
   const btn = e.target.closest(".del");
   if (!btn) return;
   jobs.splice(Number(btn.dataset.i), 1);
+  if (editIndex !== null) openForm(false);   // silme sonrası sıralar kayar, açık düzenlemeyi kapat
   save();
   render();
 });
@@ -343,6 +392,7 @@ function selectConfig() {
 
 updateScheduleFields();
 render();
+load();
 </script>
 </body>
 </html>

@@ -7,36 +7,11 @@
     },
     "jobs": [
         {
-            "source": "C:\\Kaynak1",
-            "target": "C:\\Hedef1",
+            "source": "C:\\YedekTest\\Kaynak",
+            "target": "C:\\YedekTest\\Hedef",
             "schedule": {
                 "type": "daily",
-                "time": "02:00"
-            },
-            "retry": {
-                "count": 3,
-                "delay": 60
-            }
-        },
-        {
-            "source": "C:\\Kaynak2",
-            "target": "D:\\Yedek2",
-            "schedule": {
-                "type": "weekly",
-                "days": [
-                    "pzt",
-                    "car",
-                    "cum"
-                ],
-                "time": "03:00"
-            }
-        },
-        {
-            "source": "C:\\Kaynak3",
-            "target": "D:\\Yedek3",
-            "schedule": {
-                "type": "interval",
-                "minutes": 30
+                "time": "12:00"
             }
         }
     ]

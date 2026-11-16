@@ -1,0 +1,7 @@
+# Servisin çalışırken oluşturduğu dosyalar
+logs/
+state.json
+status.json
+history.json
+*.tmp
+__pycache__/

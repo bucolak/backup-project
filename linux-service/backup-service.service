@@ -1,0 +1,16 @@
+[Unit]
+Description=Backup Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=buket
+WorkingDirectory=/home/buket/backup-project/linux-service
+ExecStart=/usr/bin/python3 -u /home/buket/backup-project/linux-service/service.py
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
