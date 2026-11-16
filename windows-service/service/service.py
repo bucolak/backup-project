@@ -6,6 +6,7 @@ import re
 import secrets
 import shutil
 import stat
+import sys
 import threading
 import time
 import urllib.parse
@@ -20,6 +21,10 @@ import win32serviceutil
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
+PCLOUD_TOKEN_PATH = os.path.join(BASE_DIR, "pcloud_token.json")
+
+# pcloud_storage.py service.py'nin yanında; servis hangi klasörde çalışırsa çalışsın bulunabilsin
+sys.path.insert(0, BASE_DIR)
 STATE_PATH = os.path.join(BASE_DIR, "state.json")
 STATUS_PATH = os.path.join(BASE_DIR, "status.json")
 HISTORY_PATH = os.path.join(BASE_DIR, "history.json")
@@ -158,7 +163,7 @@ apply_log_settings()   # config okunana kadar varsayılan ayarlarla logla
 
 DAYS = ["pzt", "sal", "car", "per", "cum", "cmt", "paz"]
 SCHEDULE_TYPES = ["daily", "weekly", "interval"]
-TARGET_TYPES = ["local", "pcloud", "gdrive"]   # hedef türleri; şimdilik sadece "local" çalışıyor
+TARGET_TYPES = ["local", "pcloud", "gdrive"]   # hedef türleri; şimdilik "local" ve "pcloud" çalışıyor
 TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")   # HH:MM, örn. 03:00
 
 jobs = []            # config'teki geçerli işler
@@ -319,14 +324,20 @@ def validate_job(item):
     target_type = item.get("target_type", "local")
     if target_type not in TARGET_TYPES:
         return "invalid target_type: %r (valid: %s)" % (target_type, ", ".join(TARGET_TYPES))
-    if target_type != "local":
-        return "target_type %r is not supported yet" % target_type
+    if target_type == "gdrive":
+        return "target_type 'gdrive' is not supported yet"
 
-    source, target = norm_path(item["source"]), norm_path(item["target"])
-    if source == target:
-        return "source and target cannot be the same folder"
-    if (target + os.sep).startswith(source + os.sep):
-        return "target cannot be inside source (backups would be copied again and again)"
+    if target_type == "pcloud":
+        # pCloud'daki klasör: "backup-project/linux-vm" gibi
+        parts = [part for part in item["target"].replace("\\", "/").split("/") if part]
+        if not parts or any(part in (".", "..") for part in parts):
+            return "invalid pcloud folder: %r" % item["target"]
+    else:
+        source, target = norm_path(item["source"]), norm_path(item["target"])
+        if source == target:
+            return "source and target cannot be the same folder"
+        if (target + os.sep).startswith(source + os.sep):
+            return "target cannot be inside source (backups would be copied again and again)"
 
     retry = item.get("retry", {})
     if not isinstance(retry, dict):
@@ -538,6 +549,16 @@ def check_access(job):
             if getattr(error, "winerror", None) != 32:
                 return "source files cannot be read (%s): %s" % (sample.name, error)
 
+    if job.get("target_type", "local") == "pcloud":
+        # pCloud için yerel hedef klasörü yok; token ve pcloud_storage.py hazır mı ona bakılır
+        if not os.path.exists(PCLOUD_TOKEN_PATH):
+            return "pcloud token file not found: %s" % PCLOUD_TOKEN_PATH
+        try:
+            import pcloud_storage  # noqa: F401
+        except ImportError as error:
+            return "pcloud support is not ready (pcloud_storage.py or requests package missing): %s" % error
+        return None
+
     # Hedef: klasör oluşturulabiliyor mu, içine yazılabiliyor mu
     try:
         os.makedirs(lp(job["target"]), exist_ok=True)
@@ -647,6 +668,29 @@ def copy_one(path, source, target, info):
     log.info("Copied and verified: %s -> %s", path, target_path)
 
 
+def upload_one_pcloud(path, job, info):
+    """Bir dosyayı pcloud_storage.py ile pCloud'a yükler."""
+    if stopping.is_set():
+        raise InterruptedError("Service is stopping")
+
+    from pcloud_storage import PCloudStorage
+
+    # Hedef "backup-project/linux-vm" ise: ilk klasör kök, kalanı dosyanın göreli yolunun önüne eklenir
+    parts = [part for part in job["target"].replace("\\", "/").split("/") if part]
+    relative_path = os.path.relpath(path, job["source"]).replace(os.sep, "/")
+    remote_path = "/".join(parts[1:] + [relative_path])
+
+    info["target"] = "pcloud:" + "/".join(parts + [relative_path])
+    info["size"] = os.path.getsize(path)
+    info["status"] = "uploading"
+
+    storage = PCloudStorage(parts[0], token_file=PCLOUD_TOKEN_PATH)
+    storage.save(path, remote_path)
+
+    info["copied"] = info["size"]
+    log.info("Uploaded to pCloud: %s -> %s", path, info["target"])
+
+
 def list_files(source):
     paths = []
     for folder, _, files in os.walk(lp(source)):
@@ -698,7 +742,10 @@ def run_file(path, job, key):
 
     failed = False
     try:
-        copy_one(path, job["source"], job["target"], info)
+        if job.get("target_type", "local") == "pcloud":
+            upload_one_pcloud(path, job, info)
+        else:
+            copy_one(path, job["source"], job["target"], info)
         info["status"] = "done"
     except InterruptedError:
         info["status"] = "cancelled"
