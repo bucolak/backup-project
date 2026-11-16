@@ -8,6 +8,7 @@ import shutil
 import stat
 import threading
 import time
+import urllib.parse
 import urllib.request
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
@@ -34,7 +35,8 @@ DEFAULT_SETTINGS = {
     "log_dir": "logs",            # log klasörü (göreli ise service.py'nin yanında)
     "log_retention_days": 30,     # kaç günlük log tutulacak (0 = hiç silme)
     "history_max": 1000,          # history.json'da tutulacak son biten dosya sayısı
-    "min_free_mb": 100            # hedef diskte her zaman boş bırakılacak alan
+    "min_free_mb": 100,           # hedef diskte her zaman boş bırakılacak alan
+    "client_id": ""               # bu makinenin adı; API'den sadece bu makinenin işleri alınır
 }
 
 
@@ -182,8 +184,17 @@ def sync_from_api():
     """API'deki işleri alır; config.json'dakilerden farklıysa config.json'ı günceller.
     config.json değişince reload_config() yeni işleri kendisi okur."""
     global api_error
+    client_id = settings["client_id"]
+    if not client_id:
+        if not api_error:
+            log.error("settings.client_id is not set, jobs are not taken from API")
+            api_error = True
+        return
+
+    # Sadece bu makinenin işlerini iste: /jobs?client_id=muhasebe-pc
+    url = API_URL + "/jobs?client_id=" + urllib.parse.quote(client_id)
     try:
-        with urllib.request.urlopen(API_URL + "/jobs", timeout=5) as response:
+        with urllib.request.urlopen(url, timeout=5) as response:
             api_jobs = json.loads(response.read().decode("utf-8"))
     except (OSError, ValueError) as error:
         if not api_error:
@@ -352,6 +363,12 @@ def apply_settings(raw):
         raw = {}
 
     new = dict(DEFAULT_SETTINGS)
+
+    value = raw.get("client_id", new["client_id"])
+    if isinstance(value, str):
+        new["client_id"] = value.strip()
+    else:
+        errors.append("invalid settings.client_id: %r, must be text" % value)
 
     value = raw.get("log_dir", new["log_dir"])
     if isinstance(value, str) and value.strip():

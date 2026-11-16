@@ -105,6 +105,7 @@ fieldset { border: 0; padding: 0; margin: 0; display: flex; flex-direction: colu
 .route span { overflow-wrap: anywhere; }
 .route .to { color: var(--muted); }
 .route .to::before { content: "→ "; }
+.route .client { font-family: var(--font-body); font-size: 12px; font-weight: 600; color: var(--accent); }
 .chip { font-size: 13px; padding: 3px 10px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); white-space: nowrap; font-weight: 500; }
 .del { border: 0; background: none; color: var(--muted); font-size: 20px; line-height: 1; padding: 4px 8px; border-radius: 6px; }
 .del:hover { color: var(--err); background: var(--err-soft); }
@@ -138,6 +139,10 @@ pre { margin: 0; padding: 14px 16px; overflow-x: auto; font-family: var(--font-m
   <form class="box" id="job-form" hidden novalidate>
     <h2 id="form-title">Yeni yedekleme</h2>
 
+    <div class="field">
+      <label for="client">Makine</label>
+      <input type="text" id="client" placeholder="windows-pc" autocomplete="off" spellcheck="false">
+    </div>
     <div class="field">
       <label for="source">Kaynak klasör</label>
       <input class="path" type="text" id="source" placeholder="C:\Belgeler" autocomplete="off" spellcheck="false">
@@ -268,12 +273,13 @@ function normPath(p) {
 }
 
 function validate(job) {
+  if (!job.client_id) return "Makine adını yaz.";
   if (!job.source) return "Kaynak klasörü yaz.";
   if (!job.target) return "Hedef klasörü yaz.";
   const src = normPath(job.source), dst = normPath(job.target);
   if (src === dst) return "Kaynak ve hedef aynı klasör olamaz.";
   if ((dst + "\\").startsWith(src + "\\")) return "Hedef, kaynağın içinde olamaz; yedekler tekrar tekrar kopyalanır.";
-  if (jobs.some((j, i) => i !== editIndex && j.source === job.source && j.target === job.target)) return "Bu kaynak ve hedefle bir iş zaten var.";
+  if (jobs.some((j, i) => i !== editIndex && j.client_id === job.client_id && j.source === job.source && j.target === job.target)) return "Bu makinede bu kaynak ve hedefle bir iş zaten var.";
 
   const s = job.schedule;
   if (s.type !== "interval" && !/^([01]\d|2[0-3]):[0-5]\d$/.test(s.time || "")) return "Saati seç.";
@@ -293,7 +299,7 @@ function readForm() {
   if (type === "weekly") {
     schedule.days = DAYS.filter((d) => $("day-" + d).checked);
   }
-  return { source: $("source").value.trim(), target: $("target").value.trim(), schedule };
+  return { client_id: $("client").value.trim(), source: $("source").value.trim(), target: $("target").value.trim(), schedule };
 }
 
 function render() {
@@ -301,7 +307,7 @@ function render() {
   $("list").innerHTML = jobs.length
     ? jobs.map((j, i) => `
       <div class="job">
-        <div class="route mono"><span>${esc(j.source)}</span><span class="to">${esc(j.target)}</span></div>
+        <div class="route mono"><span class="client">${esc(j.client_id)}</span><span>${esc(j.source)}</span><span class="to">${esc(j.target)}</span></div>
         <span class="chip">${esc(scheduleText(j.schedule))}</span>
         <button class="edit" type="button" data-i="${i}">Düzenle</button>
         <button class="del" type="button" data-i="${i}" aria-label="${esc(j.source)} işini sil">×</button>
@@ -312,6 +318,7 @@ function render() {
 
 // Formu bir işin değerleriyle doldur (düzenleme için)
 function fillForm(job) {
+  $("client").value = job.client_id;
   $("source").value = job.source;
   $("target").value = job.target;
   $("type").value = job.schedule.type;
@@ -332,7 +339,7 @@ function openForm(open, index = null) {
   addBtn.setAttribute("aria-expanded", String(open));
   addBtn.setAttribute("aria-label", open ? "Formu kapat" : "Yeni yedekleme ekle");
   $("form-error").hidden = true;
-  if (open) $("source").focus();
+  if (open) $("client").focus();
 }
 
 addBtn.addEventListener("click", () => openForm(form.hidden || editIndex !== null));

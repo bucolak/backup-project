@@ -1,6 +1,7 @@
 import json
 import os
 import sqlite3
+from typing import Optional
 
 from fastapi import Body, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -23,6 +24,7 @@ def connect():
     connection.execute("""
         CREATE TABLE IF NOT EXISTS jobs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            client_id TEXT,
             source TEXT,
             target TEXT,
             schedule TEXT
@@ -32,12 +34,22 @@ def connect():
 
 
 @app.get("/jobs")
-def get_jobs():
+def get_jobs(client_id: Optional[str] = None):
     connection = connect()
-    rows = connection.execute("SELECT source, target, schedule FROM jobs ORDER BY id").fetchall()
+    if client_id is None:
+        # Arayüz: bütün makinelerin işleri
+        rows = connection.execute(
+            "SELECT client_id, source, target, schedule FROM jobs ORDER BY id"
+        ).fetchall()
+    else:
+        # Servis: sadece kendi makinesinin işleri
+        rows = connection.execute(
+            "SELECT client_id, source, target, schedule FROM jobs WHERE client_id = ? ORDER BY id",
+            (client_id,)
+        ).fetchall()
     connection.close()
-    return [{"source": source, "target": target, "schedule": json.loads(schedule)}
-            for source, target, schedule in rows]
+    return [{"client_id": client_id, "source": source, "target": target, "schedule": json.loads(schedule)}
+            for client_id, source, target, schedule in rows]
 
 
 @app.put("/jobs")
@@ -47,8 +59,8 @@ def save_jobs(jobs: list = Body()):
         connection.execute("DELETE FROM jobs")
         for job in jobs:
             connection.execute(
-                "INSERT INTO jobs (source, target, schedule) VALUES (?, ?, ?)",
-                (job["source"], job["target"], json.dumps(job["schedule"]))
+                "INSERT INTO jobs (client_id, source, target, schedule) VALUES (?, ?, ?, ?)",
+                (job["client_id"], job["source"], job["target"], json.dumps(job["schedule"]))
             )
     connection.close()
     return {"saved": len(jobs)}
