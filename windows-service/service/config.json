@@ -6,5 +6,19 @@
         "min_free_mb": 100,
         "client_id": "windows-pc"
     },
-    "jobs": []
+    "jobs": [
+        {
+            "client_id": "windows-pc",
+            "source": "C:\\YedekTest\\Kaynak",
+            "target_type": "pcloud",
+            "target": "backup-project/windows/test",
+            "schedule": {
+                "type": "weekly",
+                "time": "02:00",
+                "days": [
+                    "pzt"
+                ]
+            }
+        }
+    ]
 }
