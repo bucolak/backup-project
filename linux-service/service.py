@@ -156,6 +156,7 @@ apply_log_settings()   # config okunana kadar varsayılan ayarlarla logla
 
 DAYS = ["pzt", "sal", "car", "per", "cum", "cmt", "paz"]
 SCHEDULE_TYPES = ["daily", "weekly", "interval"]
+TARGET_TYPES = ["local", "pcloud", "gdrive"]   # hedef türleri; şimdilik sadece "local" çalışıyor
 TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")   # HH:MM, örn. 03:00
 
 jobs = []            # config'teki geçerli işler
@@ -311,6 +312,13 @@ def validate_job(item):
     for field in ("source", "target"):
         if not isinstance(item.get(field), str) or not item[field].strip():
             return field + " is missing or empty"
+
+    # Hedef türü yazılmamışsa yerel klasör kabul edilir
+    target_type = item.get("target_type", "local")
+    if target_type not in TARGET_TYPES:
+        return "invalid target_type: %r (valid: %s)" % (target_type, ", ".join(TARGET_TYPES))
+    if target_type != "local":
+        return "target_type %r is not supported yet" % target_type
 
     source, target = norm_path(item["source"]), norm_path(item["target"])
     if source == target:

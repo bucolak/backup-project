@@ -34,6 +34,7 @@ def connect():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             client_id TEXT,
             source TEXT,
+            target_type TEXT,
             target TEXT,
             schedule TEXT
         )
@@ -47,17 +48,18 @@ def get_jobs(client_id: Optional[str] = None):
     if client_id is None:
         # Arayüz: bütün makinelerin işleri
         rows = connection.execute(
-            "SELECT client_id, source, target, schedule FROM jobs ORDER BY id"
+            "SELECT client_id, source, target_type, target, schedule FROM jobs ORDER BY id"
         ).fetchall()
     else:
         # Servis: sadece kendi makinesinin işleri
         rows = connection.execute(
-            "SELECT client_id, source, target, schedule FROM jobs WHERE client_id = ? ORDER BY id",
+            "SELECT client_id, source, target_type, target, schedule FROM jobs WHERE client_id = ? ORDER BY id",
             (client_id,)
         ).fetchall()
     connection.close()
-    return [{"client_id": client_id, "source": source, "target": target, "schedule": json.loads(schedule)}
-            for client_id, source, target, schedule in rows]
+    return [{"client_id": client_id, "source": source, "target_type": target_type,
+             "target": target, "schedule": json.loads(schedule)}
+            for client_id, source, target_type, target, schedule in rows]
 
 
 @app.put("/jobs")
@@ -67,8 +69,9 @@ def save_jobs(jobs: list = Body()):
         connection.execute("DELETE FROM jobs")
         for job in jobs:
             connection.execute(
-                "INSERT INTO jobs (client_id, source, target, schedule) VALUES (?, ?, ?, ?)",
-                (job["client_id"], job["source"], job["target"], json.dumps(job["schedule"]))
+                "INSERT INTO jobs (client_id, source, target_type, target, schedule) VALUES (?, ?, ?, ?, ?)",
+                (job["client_id"], job["source"], job.get("target_type", "local"), job["target"],
+                 json.dumps(job["schedule"]))
             )
     connection.close()
     return {"saved": len(jobs)}

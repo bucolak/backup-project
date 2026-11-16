@@ -105,6 +105,7 @@ fieldset { border: 0; padding: 0; margin: 0; display: flex; flex-direction: colu
 .route span { overflow-wrap: anywhere; }
 .route .to { color: var(--muted); }
 .route .to::before { content: "→ "; }
+.route .type { font-family: var(--font-body); font-size: 12px; font-weight: 600; color: var(--muted); margin-right: 6px; }
 .route .client { font-family: var(--font-body); font-size: 12px; font-weight: 600; color: var(--accent); }
 .chip { font-size: 13px; padding: 3px 10px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); white-space: nowrap; font-weight: 500; }
 .del { border: 0; background: none; color: var(--muted); font-size: 20px; line-height: 1; padding: 4px 8px; border-radius: 6px; }
@@ -148,7 +149,15 @@ pre { margin: 0; padding: 14px 16px; overflow-x: auto; font-family: var(--font-m
       <input class="path" type="text" id="source" placeholder="C:\Belgeler" autocomplete="off" spellcheck="false">
     </div>
     <div class="field">
-      <label for="target">Hedef klasör</label>
+      <label for="target-type">Hedef türü</label>
+      <select id="target-type">
+        <option value="local">Yerel klasör</option>
+        <option value="pcloud">pCloud</option>
+        <option value="gdrive">Google Drive</option>
+      </select>
+    </div>
+    <div class="field">
+      <label for="target" id="target-label">Hedef klasör</label>
       <input class="path" type="text" id="target" placeholder="D:\Yedek\Belgeler" autocomplete="off" spellcheck="false">
     </div>
 
@@ -209,6 +218,7 @@ pre { margin: 0; padding: 14px 16px; overflow-x: auto; font-family: var(--font-m
 <script>
 const DAYS = ["pzt", "sal", "car", "per", "cum", "cmt", "paz"];
 const DAY_LABELS = ["Pzt", "Sal", "Çar", "Per", "Cum", "Cmt", "Paz"];
+const TARGET_TYPES = { local: "Yerel", pcloud: "pCloud", gdrive: "Google Drive" };
 const API_URL = "";   // arayüz API'nin içinden açılıyor; istekler aynı adrese gidiyor
 
 const $ = (id) => document.getElementById(id);
@@ -255,6 +265,13 @@ function scheduleText(s) {
   return s.minutes + " dakikada bir";
 }
 
+// Hedef türü bulut ise hedef alanı buluttaki klasör olur
+function updateTargetField() {
+  const cloud = $("target-type").value !== "local";
+  $("target-label").textContent = cloud ? "Buluttaki klasör" : "Hedef klasör";
+  $("target").placeholder = cloud ? "backup-project/" + ($("client").value.trim() || "makine-adi") : "D:\\Yedek\\Belgeler";
+}
+
 function updateScheduleFields() {
   const type = $("type").value;
   $("time-field").hidden = type === "interval";
@@ -276,10 +293,13 @@ function validate(job) {
   if (!job.client_id) return "Makine adını yaz.";
   if (!job.source) return "Kaynak klasörü yaz.";
   if (!job.target) return "Hedef klasörü yaz.";
-  const src = normPath(job.source), dst = normPath(job.target);
-  if (src === dst) return "Kaynak ve hedef aynı klasör olamaz.";
-  if ((dst + "\\").startsWith(src + "\\")) return "Hedef, kaynağın içinde olamaz; yedekler tekrar tekrar kopyalanır.";
-  if (jobs.some((j, i) => i !== editIndex && j.client_id === job.client_id && j.source === job.source && j.target === job.target)) return "Bu makinede bu kaynak ve hedefle bir iş zaten var.";
+  if (job.target_type === "local") {
+    // Bu kontroller sadece iki klasör aynı bilgisayardayken anlamlı
+    const src = normPath(job.source), dst = normPath(job.target);
+    if (src === dst) return "Kaynak ve hedef aynı klasör olamaz.";
+    if ((dst + "\\").startsWith(src + "\\")) return "Hedef, kaynağın içinde olamaz; yedekler tekrar tekrar kopyalanır.";
+  }
+  if (jobs.some((j, i) => i !== editIndex && j.client_id === job.client_id && j.source === job.source && (j.target_type || "local") === job.target_type && j.target === job.target)) return "Bu makinede bu kaynak ve hedefle bir iş zaten var.";
 
   const s = job.schedule;
   if (s.type !== "interval" && !/^([01]\d|2[0-3]):[0-5]\d$/.test(s.time || "")) return "Saati seç.";
@@ -299,7 +319,13 @@ function readForm() {
   if (type === "weekly") {
     schedule.days = DAYS.filter((d) => $("day-" + d).checked);
   }
-  return { client_id: $("client").value.trim(), source: $("source").value.trim(), target: $("target").value.trim(), schedule };
+  return {
+    client_id: $("client").value.trim(),
+    source: $("source").value.trim(),
+    target_type: $("target-type").value,
+    target: $("target").value.trim(),
+    schedule
+  };
 }
 
 function render() {
@@ -307,7 +333,7 @@ function render() {
   $("list").innerHTML = jobs.length
     ? jobs.map((j, i) => `
       <div class="job">
-        <div class="route mono"><span class="client">${esc(j.client_id)}</span><span>${esc(j.source)}</span><span class="to">${esc(j.target)}</span></div>
+        <div class="route mono"><span class="client">${esc(j.client_id)}</span><span>${esc(j.source)}</span><span class="to"><span class="type">${TARGET_TYPES[j.target_type || "local"]}</span>${esc(j.target)}</span></div>
         <span class="chip">${esc(scheduleText(j.schedule))}</span>
         <button class="edit" type="button" data-i="${i}">Düzenle</button>
         <button class="del" type="button" data-i="${i}" aria-label="${esc(j.source)} işini sil">×</button>
@@ -320,7 +346,9 @@ function render() {
 function fillForm(job) {
   $("client").value = job.client_id;
   $("source").value = job.source;
+  $("target-type").value = job.target_type || "local";
   $("target").value = job.target;
+  updateTargetField();
   $("type").value = job.schedule.type;
   if (job.schedule.time) $("time").value = job.schedule.time;
   if (job.schedule.minutes) $("minutes").value = job.schedule.minutes;
@@ -332,6 +360,7 @@ function openForm(open, index = null) {
   editIndex = open ? index : null;
   form.reset();
   updateScheduleFields();
+  updateTargetField();
   if (editIndex !== null) fillForm(jobs[editIndex]);
   $("form-title").textContent = editIndex !== null ? "Yedeklemeyi düzenle" : "Yeni yedekleme";
   $("submit-btn").textContent = editIndex !== null ? "Kaydet" : "Ekle";
@@ -345,6 +374,8 @@ function openForm(open, index = null) {
 addBtn.addEventListener("click", () => openForm(form.hidden || editIndex !== null));
 $("cancel-btn").addEventListener("click", () => openForm(false));
 $("type").addEventListener("change", updateScheduleFields);
+$("target-type").addEventListener("change", updateTargetField);
+$("client").addEventListener("input", updateTargetField);
 
 form.addEventListener("submit", (e) => {
   e.preventDefault();

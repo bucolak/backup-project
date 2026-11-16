@@ -5,3 +5,9 @@ status.json
 history.json
 *.tmp
 __pycache__/
+
+# Bulut hesaplarının gizli bilgileri: asla Git'e girmesin
+pcloud_token.json
+pcloud_credentials.json
+token.json
+credentials.json
