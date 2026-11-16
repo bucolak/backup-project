@@ -6,6 +6,14 @@ from typing import Optional
 from fastapi import Body, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from fastapi.responses import FileResponse
+
+WEB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "web", "yedekleme-isleri.html")
+
+@app.get("/")
+def web():
+    return FileResponse(WEB_PATH)
+
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "backup.db")
 
 app = FastAPI()
