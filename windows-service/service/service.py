@@ -35,6 +35,7 @@ DEFAULT_RETRY = {"count": 3, "delay": 60}   # 3 kez, 60 saniye arayla
 ACCESS_RECHECK = 60   # kaynak/hedef izin sorunu varsa kaç saniyede bir tekrar bakılacak
 API_URL = "http://127.0.0.1:8001"   # API aynı bilgisayarda çalışıyor
 API_CHECK_SECONDS = 30                    # API'ye kaç saniyede bir sorulacak
+STATUS_REPORT_SECONDS = 5                 # durum (sonuçlar ve ilerleme) API'ye kaç saniyede bir gönderilecek
 LOG_NAME_RE = re.compile(r"^log_(\d{4}-\d{2}-\d{2})\.jsonl$")
 
 # config.json'daki "settings" bölümünde yazılmayan ayarlar için varsayılanlar
@@ -186,6 +187,8 @@ running_lock = threading.Lock()   # ortak verilere aynı anda tek thread dokunsu
 state_lock = threading.Lock()     # state.json'a aynı anda tek thread yazsın
 stopping = threading.Event()      # servis durduruluyor mu?
 last_api_check = 0                # API'ye en son ne zaman soruldu
+last_status_report = 0            # durum API'ye en son ne zaman gönderildi
+last_results = {}                 # (source, target) -> işin son çalışmasının sonucu
 api_error = False                 # API'ye ulaşılamadığı zaten loglandı mı?
 
 
@@ -699,8 +702,12 @@ def upload_one_pcloud(path, job, info):
             sha256.update(chunk)
             sha1.update(chunk)
 
+    def on_progress(done, total):
+        # pcloud_storage yüklemenin ilerlemesini bildirir; dosya boyutuna oranlanır
+        info["copied"] = info["size"] * done // total if total else 0
+
     storage = PCloudStorage(parts[0], token_file=PCLOUD_TOKEN_PATH)
-    result = storage.save(path, remote_path)
+    result = storage.save(path, remote_path, progress=on_progress)
     info["copied"] = info["size"]
 
     # Doğrulama: pCloud'un aldığı dosya için hesapladığı hash, bizimkiyle aynı mı?
@@ -752,7 +759,7 @@ def is_due(job, key, now):
 
 def start_job(pool, job, key, paths, retries_left):
     with running_lock:
-        running[key] = {"pending": len(paths), "failed_paths": [], "retries_left": retries_left}
+        running[key] = {"pending": len(paths), "total": len(paths), "failed_paths": [], "retries_left": retries_left}
 
     # Her dosya ayrı bir görev: boştaki thread hangisiyse o alır
     for path in paths:
@@ -764,7 +771,8 @@ def run_file(path, job, key):
     akey = (key, path)
     info = {
         "source": path, "target": None, "size": None, "copied": 0,
-        "status": "queued", "start": now_text(), "end": None, "error": None
+        "status": "queued", "start": now_text(), "end": None, "error": None,
+        "job_source": job["source"], "job_target": job["target"]   # panel dosyayı işiyle eşleştirsin
     }
     with running_lock:
         active[akey] = info
@@ -804,6 +812,12 @@ def run_file(path, job, key):
 
             if done:
                 del running[key]
+                # Panelde gösterilecek sonuç: ne zaman bitti, kaç dosyadan kaçı hatalı
+                last_results[key] = {
+                    "finished": now_text(),
+                    "files": state["total"],
+                    "failed": len(state["failed_paths"])
+                }
                 if not state["failed_paths"]:
                     last_errors.pop(key, None)   # iş tamamen başarılı: eski hatayı temizle
                 # Hatalı dosya varsa ve hak kaldıysa sadece onları yeniden denemek üzere sıraya koy
@@ -832,8 +846,8 @@ def run_file(path, job, key):
                           failed_count, job["source"], job["target"])
 
 
-def write_status():
-    """Servisin anlık durumunu status.json'a yazar (her saniye)."""
+def build_status():
+    """Servisin anlık durumunu hazırlar: status.json'a da API'ye de bu gider."""
     with running_lock:
         job_list = []
         for job in jobs:
@@ -848,11 +862,14 @@ def write_status():
                 "last_run": last_run.isoformat(timespec="seconds") if last_run else None,
                 "retry_at": None,
                 "retries_left": None,
-                "last_error": last_errors.get(key)
+                "last_error": last_errors.get(key),
+                "total": 0,
+                "last_result": last_results.get(key)
             }
             if key in running:
                 entry["state"] = "running"
                 entry["pending"] = running[key]["pending"]
+                entry["total"] = running[key]["total"]
             elif key in access_problems:
                 entry["state"] = "waiting_access"
                 entry["last_error"] = access_problems[key]["error"]
@@ -868,11 +885,34 @@ def write_status():
             "jobs": job_list,
             "active": [dict(info) for info in active.values()]
         }
+    return data
 
+
+def write_status(data):
+    """Durumu status.json'a yazar (her saniye)."""
     try:
         write_json(STATUS_PATH, data)
     except OSError:
         pass   # dosya o an başka bir program tarafından kilitliyse bir sonraki saniye yazılır
+
+
+def report_status(data):
+    """Durumu API'ye gönderir; panel buradan okur."""
+    client_id = settings["client_id"]
+    if not client_id:
+        return
+    url = API_URL + "/status?client_id=" + urllib.parse.quote(client_id)
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(data, ensure_ascii=False).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST"
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=3):
+            pass
+    except (OSError, ValueError):
+        pass   # API'ye ulaşılamıyorsa bu zaten sync_from_api() tarafından loglanıyor
 
 
 def load_history():
@@ -920,7 +960,7 @@ class BackupService(win32serviceutil.ServiceFramework):
         win32event.SetEvent(self.stop_event)
 
     def SvcDoRun(self):
-        global last_api_check
+        global last_api_check, last_status_report
         reload_config()   # önce ayarları oku: loglar doğru klasöre gitsin
         log.info("Service started")
         load_state()
@@ -1005,7 +1045,12 @@ class BackupService(win32serviceutil.ServiceFramework):
                         log.exception("Job failed: %s -> %s", job["source"], job["target"])
                         continue
 
-                write_status()
+                status = build_status()
+                write_status(status)
+                # Belirli aralıklarla durumu API'ye gönder (panelde sonuçlar ve ilerleme)
+                if time.time() - last_status_report >= STATUS_REPORT_SECONDS:
+                    last_status_report = time.time()
+                    report_status(status)
                 write_history()
 
                 if win32event.WaitForSingleObject(self.stop_event, 1000) == win32event.WAIT_OBJECT_0:
@@ -1017,7 +1062,7 @@ class BackupService(win32serviceutil.ServiceFramework):
             # Çalışan thread'lere dur de, sırada bekleyenleri hiç başlatma, bitmelerini bekle
             stopping.set()
             pool.shutdown(wait=True, cancel_futures=True)
-            write_status()
+            write_status(build_status())
             write_history()
 
         log.info("Service stopped")

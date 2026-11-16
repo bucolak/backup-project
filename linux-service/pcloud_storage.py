@@ -22,12 +22,14 @@ class PCloudStorage:
         data = self.call("createfolderifnotexists", {"folderid": parent_id, "name": name})
         return data["metadata"]["folderid"]
 
-    def upload_with_progress(self, temp_path, parent_id, file_name):
+    def upload_with_progress(self, temp_path, parent_id, file_name, progress=None):
         total_mb = os.path.getsize(temp_path) / 1024 / 1024
         start = time.time()
         last_print = {"time": 0}
 
         def on_progress(monitor):
+            if progress:
+                progress(monitor.bytes_read, monitor.len)   # ilerlemeyi çağırana bildir (panel için)
             now = time.time()
             finished = monitor.bytes_read >= monitor.len
             if now - last_print["time"] < 2 and not finished:
@@ -55,7 +57,7 @@ class PCloudStorage:
         print(f"Done: {file_name} in {time.time() - start:.1f} s", flush=True)
         return data   # pCloud'un cevabı: yüklenen dosyanın bilgileri ve hash'leri (checksums)
 
-    def save(self, temp_path, goreli_yol):
+    def save(self, temp_path, goreli_yol, progress=None):
         parts = goreli_yol.split("/")
         if any(p in ("", ".", "..") for p in parts):
             raise ValueError("Invalid file path")
@@ -65,4 +67,4 @@ class PCloudStorage:
             parent_id = self.get_or_create_folder(folder_name, parent_id)
 
         file_name = parts[-1]
-        return self.upload_with_progress(temp_path, parent_id, file_name)
+        return self.upload_with_progress(temp_path, parent_id, file_name, progress)

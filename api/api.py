@@ -1,6 +1,7 @@
 import json
 import os
 import sqlite3
+from datetime import datetime
 from typing import Optional
 
 from fastapi import Body, FastAPI
@@ -51,6 +52,15 @@ def connect():
         )
     """)
 
+    # Her makinenin son gönderdiği durum (sonuçlar ve ilerleme); makine başına tek satır
+    connection.execute("""
+        CREATE TABLE IF NOT EXISTS client_status (
+            client_id TEXT PRIMARY KEY,
+            updated_at TEXT,
+            status TEXT
+        )
+    """)
+
     # Migration: tablo eski yapıdaysa eksik sütunları ekle (veriler korunur)
     existing = [row[1] for row in connection.execute("PRAGMA table_info(jobs)")]
     for name, column_type in JOB_COLUMNS.items():
@@ -94,3 +104,28 @@ def save_jobs(jobs: list = Body()):
             )
     connection.close()
     return {"saved": len(jobs)}
+
+
+@app.post("/status")
+def save_status(client_id: str, status: dict = Body()):
+    # Servis durumunu gönderir; makinenin eski durumunun yerine yazılır
+    connection = connect()
+    with connection:
+        connection.execute(
+            "INSERT OR REPLACE INTO client_status (client_id, updated_at, status) VALUES (?, ?, ?)",
+            (client_id, datetime.now().isoformat(timespec="seconds"), json.dumps(status))
+        )
+    connection.close()
+    return {"saved": True}
+
+
+@app.get("/status")
+def get_status():
+    # Panel: bütün makinelerin son durumu
+    connection = connect()
+    rows = connection.execute(
+        "SELECT client_id, updated_at, status FROM client_status ORDER BY client_id"
+    ).fetchall()
+    connection.close()
+    return [{"client_id": client_id, "updated_at": updated_at, "status": json.loads(status)}
+            for client_id, updated_at, status in rows]

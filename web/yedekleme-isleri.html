@@ -112,6 +112,19 @@ fieldset { border: 0; padding: 0; margin: 0; display: flex; flex-direction: colu
 .del:hover { color: var(--err); background: var(--err-soft); }
 .edit { border: 1px solid var(--line); background: var(--surface); color: var(--fg); font-size: 13px; padding: 4px 10px; border-radius: 6px; }
 .edit:hover { border-color: var(--accent); color: var(--accent); }
+/* Durum: son sonuç ve ilerleme */
+.job-status { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--muted); }
+.job-status .line { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: center; }
+.state { font-weight: 600; padding: 1px 8px; border-radius: 999px; background: var(--surface-2); color: var(--fg); }
+.state.running { background: var(--accent-soft); color: var(--accent); }
+.state.problem { background: var(--err-soft); color: var(--err); }
+.ok { color: var(--accent); }
+.bad { color: var(--err); }
+.file { display: grid; grid-template-columns: minmax(0, 1fr) 120px 44px; gap: 10px; align-items: center; }
+.file .name { font-family: var(--font-mono); font-size: 12px; overflow-wrap: anywhere; min-width: 0; color: var(--fg); }
+.bar { height: 6px; background: var(--surface-2); border-radius: 3px; overflow: hidden; }
+.bar i { display: block; height: 100%; background: var(--accent); }
+.file .pct { text-align: right; font-variant-numeric: tabular-nums; }
 .empty { padding: 28px 16px; text-align: center; color: var(--muted); }
 .empty b { color: var(--fg); font-weight: 500; }
 
@@ -226,6 +239,7 @@ const form = $("job-form");
 const addBtn = $("add-btn");
 
 let jobs = [];
+let statuses = {};      // client_id -> makinenin API'ye son gönderdiği durum
 let editIndex = null;   // düzenlenen işin sırası; yeni iş eklenirken null
 
 // İşleri API'den al
@@ -254,6 +268,60 @@ function save() {
       showApiError("Kaydedilemedi. " + error.message);
       load();   // ekranda kaydedilmemiş bir iş kalmasın: listeyi API'deki gerçek haliyle yenile
     });
+}
+
+// Makinelerin durumunu API'den al (birkaç saniyede bir)
+function loadStatus() {
+  fetch(API_URL + "/status")
+    .then((response) => {
+      if (!response.ok) throw new Error("HTTP " + response.status);
+      return response.json();
+    })
+    .then((data) => {
+      statuses = {};
+      data.forEach((row) => { statuses[row.client_id] = row; });
+      render();
+    })
+    .catch(() => {});   // durum alınamazsa liste eskisi gibi görünür; hata kutusu işler içindir
+}
+
+const STATE_LABELS = {
+  idle: "Bekliyor", running: "Çalışıyor",
+  waiting_retry: "Yeniden deneyecek", waiting_access: "Erişim sorunu"
+};
+
+function timeText(iso) {
+  return iso ? iso.replace("T", " ") : "—";
+}
+
+// Bir işin durumunu (son sonuç, ilerleme) gösteren HTML
+function statusHtml(j) {
+  const row = statuses[j.client_id];
+  const s = row && row.status.jobs.find((x) => x.source === j.source && x.target === j.target);
+  if (!s) return `<div class="job-status">Durum bilgisi yok</div>`;
+
+  const problem = s.state === "waiting_access" || s.state === "waiting_retry";
+  let html = `<div class="line"><span class="state ${s.state === "running" ? "running" : problem ? "problem" : ""}">${STATE_LABELS[s.state] || esc(s.state)}</span>`;
+  if (s.state === "running") html += `<span>${s.total - s.pending}/${s.total} dosya</span>`;
+  html += `<span>Son çalışma: ${esc(timeText(s.last_run))}</span>`;
+  if (s.last_result) {
+    html += s.last_result.failed === 0
+      ? `<span class="ok">Son sonuç: ${s.last_result.files} dosya, hepsi tamam</span>`
+      : `<span class="bad">Son sonuç: ${s.last_result.files} dosyadan ${s.last_result.failed} tanesi hatalı</span>`;
+  }
+  html += `</div>`;
+  if (s.last_error) html += `<div class="bad">${esc(s.last_error)}</div>`;
+
+  // Şu an kopyalanan / yüklenen dosyalar ve yüzdeleri
+  row.status.active
+    .filter((a) => a.job_source === j.source && a.job_target === j.target)
+    .forEach((a) => {
+      const pct = a.size ? Math.min(100, Math.floor(a.copied * 100 / a.size)) : 0;
+      html += `<div class="file"><span class="name">${esc(a.source)}</span>
+        <span class="bar"><i style="width:${pct}%"></i></span><span class="pct">%${pct}</span></div>`;
+    });
+
+  return `<div class="job-status">${html}</div>`;
 }
 
 function showApiError(message) {
@@ -348,6 +416,7 @@ function render() {
         <span class="chip">${esc(scheduleText(j.schedule))}</span>
         <button class="edit" type="button" data-i="${i}">Düzenle</button>
         <button class="del" type="button" data-i="${i}" aria-label="${esc(j.source)} işini sil">×</button>
+        ${statusHtml(j)}
       </div>`).join("")
     : `<div class="empty"><b>Henüz yedekleme yok.</b><br>Sağ üstteki + ile ilk yedeklemeyi ekle.</div>`;
   $("config").textContent = JSON.stringify({ jobs }, null, 4);
@@ -442,6 +511,8 @@ function selectConfig() {
 updateScheduleFields();
 render();
 load();
+loadStatus();
+setInterval(loadStatus, 3000);   // durum 3 saniyede bir yenilenir
 </script>
 </body>
 </html>
