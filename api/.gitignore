@@ -2,3 +2,9 @@ backup.db
 __pycache__/
 api-service.exe
 logs/
+
+# pCloud token: asla Git'e girmesin
+pcloud_token.json
+
+# Geri yüklemede servisten gelen, henüz indirilmemiş dosyalar
+restore_tmp/

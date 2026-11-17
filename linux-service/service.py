@@ -7,6 +7,7 @@ import secrets
 import shutil
 import stat
 import sys
+import tempfile
 import threading
 import time
 import urllib.parse
@@ -14,6 +15,7 @@ import urllib.request
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
+from zipfile import ZIP_DEFLATED, ZipFile
 
 import signal
 
@@ -33,7 +35,8 @@ DEFAULT_RETRY = {"count": 3, "delay": 60}   # 3 kez, 60 saniye arayla
 ACCESS_RECHECK = 60   # kaynak/hedef izin sorunu varsa kaç saniyede bir tekrar bakılacak
 API_URL = "http://192.168.89.1:8001"   # API başka bir bilgisayardaysa onun adresi yazılmalı
 API_CHECK_SECONDS = 30                    # API'ye kaç saniyede bir sorulacak
-STATUS_REPORT_SECONDS = 5                 # durum (sonuçlar ve ilerleme) API'ye kaç saniyede bir gönderilecek
+STATUS_REPORT_SECONDS = 5                 # durum (sonuçlar ve ilerleme) ve yeni loglar API'ye kaç saniyede bir gönderilecek
+PENDING_LOGS_MAX = 5000                   # API'ye gönderilmeyi bekleyen en fazla log satırı
 LOG_NAME_RE = re.compile(r"^log_(\d{4}-\d{2}-\d{2})\.jsonl$")
 
 # config.json'daki "settings" bölümünde yazılmayan ayarlar için varsayılanlar
@@ -80,6 +83,20 @@ class JsonFormatter(logging.Formatter):
         if record.exc_info:
             entry["error"] = self.formatException(record.exc_info)
         return json.dumps(entry, ensure_ascii=False)
+
+
+class ApiLogHandler(logging.Handler):
+    """Log satırlarını, API'ye gönderilmek üzere hafızada biriktirir."""
+
+    def __init__(self):
+        super().__init__()
+        self.pending = deque(maxlen=PENDING_LOGS_MAX)   # API'ye ulaşılamazsa en eskiler atılır
+
+    def emit(self, record):
+        try:
+            self.pending.append(json.loads(self.format(record)))
+        except Exception:
+            self.handleError(record)
 
 
 class DailyJsonHandler(logging.Handler):
@@ -152,17 +169,25 @@ def apply_log_settings():
     handler = DailyJsonHandler(folder, settings["log_retention_days"])
     handler.setFormatter(JsonFormatter())
     for old in list(log.handlers):
-        log.removeHandler(old)
-        old.close()
+        if isinstance(old, DailyJsonHandler):   # API'ye giden log kuyruğuna dokunma
+            log.removeHandler(old)
+            old.close()
     log.addHandler(handler)
     log_settings = wanted
 
 
 apply_log_settings()   # config okunana kadar varsayılan ayarlarla logla
 
+# Log satırları dosyaya yazılırken bir kopyası da API'ye gönderilmek üzere biriktirilir
+api_log_handler = ApiLogHandler()
+api_log_handler.setFormatter(JsonFormatter())
+log.addHandler(api_log_handler)
+
 DAYS = ["pzt", "sal", "car", "per", "cum", "cmt", "paz"]
 SCHEDULE_TYPES = ["daily", "weekly", "interval"]
 TARGET_TYPES = ["local", "pcloud", "gdrive"]   # hedef türleri; şimdilik "local" ve "pcloud" çalışıyor
+MODES = ["copy", "move"]
+COMPRESSIONS = ["none", "zip"]   # none: dosyalar olduğu gibi; zip: zip olmayan her dosya ayrı ayrı ziplenir   # copy: kaynak kalır; move: dosya hedefte doğrulandıktan sonra kaynaktan silinir
 TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")   # HH:MM, örn. 03:00
 
 jobs = []            # config'teki geçerli işler
@@ -332,6 +357,16 @@ def validate_job(item):
     if target_type == "gdrive":
         return "target_type 'gdrive' is not supported yet"
 
+    # İşlem yazılmamışsa kopyalama kabul edilir
+    mode = item.get("mode", "copy")
+    if mode not in MODES:
+        return "invalid mode: %r (valid: %s)" % (mode, ", ".join(MODES))
+
+    # Sıkıştırma yazılmamışsa dosyalar olduğu gibi aktarılır
+    compression = item.get("compression", "none")
+    if compression not in COMPRESSIONS:
+        return "invalid compression: %r (valid: %s)" % (compression, ", ".join(COMPRESSIONS))
+
     if target_type == "pcloud":
         # pCloud'daki klasör: "backup-project/linux-vm" gibi
         parts = [part for part in item["target"].replace("\\", "/").split("/") if part]
@@ -497,6 +532,45 @@ def calculate_hash(path):
     return sha256.hexdigest()
 
 
+def needs_zip(job, path):
+    """İş zip'li ise ve dosya zaten .zip değilse True."""
+    return job.get("compression", "none") == "zip" and not path.lower().endswith(".zip")
+
+
+def zip_one(path, zip_path, info):
+    """Dosyayı tek başına zip_path'e zipler; kaynağın SHA-256'sını döndürür."""
+    source_hash = hashlib.sha256()
+    with open(lp(path), "rb") as src, open(lp(zip_path), "wb") as raw:
+        with ZipFile(raw, "w", ZIP_DEFLATED) as zf:
+            # force_zip64: 4 GB'tan büyük dosyalar da ziplenebilsin
+            with zf.open(os.path.basename(path), "w", force_zip64=True) as dst:
+                while True:
+                    if stopping.is_set():
+                        raise InterruptedError("Service is stopping")
+                    chunk = src.read(CHUNK_SIZE)
+                    if not chunk:
+                        break
+                    source_hash.update(chunk)
+                    dst.write(chunk)
+                    info["copied"] += len(chunk)   # ilerleme: kaynaktan okunan bayt
+        # Bellekte bekleyen veriyi şimdi diske yazdır (elektrik kesintisine karşı)
+        raw.flush()
+        os.fsync(raw.fileno())
+    return source_hash.hexdigest()
+
+
+def zip_content_hash(zip_path):
+    """Zip'in içindeki tek dosyayı açıp okur, SHA-256'sını döndürür (doğrulama için)."""
+    sha256 = hashlib.sha256()
+    with ZipFile(lp(zip_path)) as zf, zf.open(zf.namelist()[0]) as f:
+        while True:
+            chunk = f.read(CHUNK_SIZE)
+            if not chunk:
+                break
+            sha256.update(chunk)
+    return sha256.hexdigest()
+
+
 def clear_readonly(path):
     """Windows'ta dosyanın salt okunur özelliğini kaldırır (dosya yoksa bir şey yapmaz)."""
     if os.name != "nt":
@@ -604,13 +678,15 @@ def release_space(reservation):
             reserved[reservation[0]] -= reservation[1]
 
 
-def copy_one(path, source, target, info):
+def copy_one(path, source, target, info, zipped=False):
     if stopping.is_set():
         raise InterruptedError("Service is stopping")
 
     source_info = os.stat(lp(path))
     relative_path = os.path.relpath(path, source)
     target_path = os.path.join(target, relative_path)
+    if zipped:
+        target_path += ".zip"   # a.txt -> a.txt.zip
     info["target"] = target_path
     info["size"] = source_info.st_size
     os.makedirs(lp(os.path.dirname(target_path)), exist_ok=True)
@@ -624,32 +700,40 @@ def copy_one(path, source, target, info):
         # Yer yoksa hiç başlama; varsa bu dosyanın boyutu kadar yeri ayır
         reservation = reserve_space(os.path.dirname(target_path), source_info.st_size)
 
-        # Dosyayı parça parça kopyala, kaynağın hash'ini kopyalarken hesapla
-        source_hash = hashlib.sha256()
-        info["status"] = "copying"
-        with open(lp(path), "rb") as src, open(lp(temp_path), "wb") as dst:
-            while True:
-                if stopping.is_set():
-                    raise InterruptedError("Service is stopping")
+        if zipped:
+            # Dosyayı geçici zip'e parça parça zipleyerek yaz, kaynağın hash'ini okurken hesapla
+            info["status"] = "zipping"
+            source_hash = zip_one(path, temp_path, info)
+        else:
+            # Dosyayı parça parça kopyala, kaynağın hash'ini kopyalarken hesapla
+            source_hash = hashlib.sha256()
+            info["status"] = "copying"
+            with open(lp(path), "rb") as src, open(lp(temp_path), "wb") as dst:
+                while True:
+                    if stopping.is_set():
+                        raise InterruptedError("Service is stopping")
 
-                chunk = src.read(CHUNK_SIZE)
-                if not chunk:
-                    break
+                    chunk = src.read(CHUNK_SIZE)
+                    if not chunk:
+                        break
 
-                source_hash.update(chunk)
-                dst.write(chunk)
-                info["copied"] += len(chunk)   # status.json'daki ilerleme için
+                    source_hash.update(chunk)
+                    dst.write(chunk)
+                    info["copied"] += len(chunk)   # status.json'daki ilerleme için
 
-            # Bellekte bekleyen veriyi şimdi diske yazdır (elektrik kesintisine karşı)
-            dst.flush()
-            os.fsync(dst.fileno())
+                # Bellekte bekleyen veriyi şimdi diske yazdır (elektrik kesintisine karşı)
+                dst.flush()
+                os.fsync(dst.fileno())
+            source_hash = source_hash.hexdigest()
 
         # Sadece tarihleri kaynakla aynı yap (salt okunur gibi özellikler kopyalanmaz)
         os.utime(lp(temp_path), ns=(source_info.st_atime_ns, source_info.st_mtime_ns))
 
         info["status"] = "verifying"
         # Doğrulama: geçici dosyayı diskten tekrar oku, hash'ini kaynakla karşılaştır
-        if source_hash.hexdigest() != calculate_hash(temp_path):
+        # (zip'te: zip'i açıp içindeki dosyanın hash'ine bakılır)
+        written_hash = zip_content_hash(temp_path) if zipped else calculate_hash(temp_path)
+        if source_hash != written_hash:
             raise IOError("Verification failed: " + target_path)
 
         # Kaynak kopyalama sırasında değiştiyse kopya karışık olabilir: hedefe koyma,
@@ -670,7 +754,7 @@ def copy_one(path, source, target, info):
         if os.path.exists(lp(temp_path)):
             os.remove(lp(temp_path))
 
-    log.info("Copied and verified: %s -> %s", path, target_path)
+    log.info("%s and verified: %s -> %s", "Zipped" if zipped else "Copied", path, target_path)
 
 
 def upload_one_pcloud(path, job, info):
@@ -683,30 +767,50 @@ def upload_one_pcloud(path, job, info):
     # Hedef "backup-project/linux-vm" ise: ilk klasör kök, kalanı dosyanın göreli yolunun önüne eklenir
     parts = [part for part in job["target"].replace("\\", "/").split("/") if part]
     relative_path = os.path.relpath(path, job["source"]).replace(os.sep, "/")
+    zipped = needs_zip(job, path)
+    if zipped:
+        relative_path += ".zip"   # a.txt -> a.txt.zip
     remote_path = "/".join(parts[1:] + [relative_path])
 
     info["target"] = "pcloud:" + "/".join(parts + [relative_path])
     info["size"] = os.path.getsize(path)
-    info["status"] = "uploading"
 
-    # Yüklemeden önce kaynağın parmak izlerini hesapla (pCloud bölgesine göre SHA-256 ya da SHA-1 veriyor)
-    sha256 = hashlib.sha256()
-    sha1 = hashlib.sha1()
-    with open(lp(path), "rb") as f:
-        while True:
-            chunk = f.read(CHUNK_SIZE)
-            if not chunk:
-                break
-            sha256.update(chunk)
-            sha1.update(chunk)
+    upload_path = path
+    temp_zip = None
+    try:
+        if zipped:
+            # Önce bu bilgisayarın geçici klasöründe zip'le ve zip'i doğrula, sonra zip'i yükle
+            temp_zip = os.path.join(tempfile.gettempdir(), "bksvc-" + secrets.token_hex(4) + ".zip" + TEMP_SUFFIX)
+            info["status"] = "zipping"
+            source_hash = zip_one(path, temp_zip, info)
+            if source_hash != zip_content_hash(temp_zip):
+                raise IOError("Zip verification failed: " + path)
+            upload_path = temp_zip
 
-    def on_progress(done, total):
-        # pcloud_storage yüklemenin ilerlemesini bildirir; dosya boyutuna oranlanır
-        info["copied"] = info["size"] * done // total if total else 0
+        info["status"] = "uploading"
 
-    storage = PCloudStorage(parts[0], token_file=PCLOUD_TOKEN_PATH)
-    result = storage.save(path, remote_path, progress=on_progress)
-    info["copied"] = info["size"]
+        # Yüklemeden önce yüklenecek dosyanın parmak izlerini hesapla (pCloud bölgesine göre SHA-256 ya da SHA-1 veriyor)
+        sha256 = hashlib.sha256()
+        sha1 = hashlib.sha1()
+        with open(lp(upload_path), "rb") as f:
+            while True:
+                chunk = f.read(CHUNK_SIZE)
+                if not chunk:
+                    break
+                sha256.update(chunk)
+                sha1.update(chunk)
+
+        def on_progress(done, total):
+            # pcloud_storage yüklemenin ilerlemesini bildirir; dosya boyutuna oranlanır
+            info["copied"] = info["size"] * done // total if total else 0
+
+        storage = PCloudStorage(parts[0], token_file=PCLOUD_TOKEN_PATH)
+        result = storage.save(upload_path, remote_path, progress=on_progress)
+        info["copied"] = info["size"]
+    finally:
+        # Geçici zip'i her durumda sil
+        if temp_zip and os.path.exists(lp(temp_zip)):
+            os.remove(lp(temp_zip))
 
     # Doğrulama: pCloud'un aldığı dosya için hesapladığı hash, bizimkiyle aynı mı?
     info["status"] = "verifying"
@@ -780,7 +884,13 @@ def run_file(path, job, key):
         if job.get("target_type", "local") == "pcloud":
             upload_one_pcloud(path, job, info)
         else:
-            copy_one(path, job["source"], job["target"], info)
+            copy_one(path, job["source"], job["target"], info, needs_zip(job, path))
+
+        # Taşıma: dosya hedefte doğrulandı, şimdi kaynaktan sil
+        if job.get("mode", "copy") == "move":
+            clear_readonly(path)   # salt okunur dosya Windows'ta silinemez
+            os.remove(lp(path))
+            log.info("Source deleted (move): %s", path)
         info["status"] = "done"
     except InterruptedError:
         info["status"] = "cancelled"
@@ -894,6 +1004,86 @@ def write_status(data):
         pass   # dosya o an başka bir program tarafından kilitliyse bir sonraki saniye yazılır
 
 
+def report_logs():
+    """Biriken yeni log satırlarını API'ye gönderir; gönderilenler kuyruktan silinir."""
+    client_id = settings["client_id"]
+    pending = api_log_handler.pending
+    if not client_id or not pending:
+        return
+    entries = list(pending)
+    url = API_URL + "/logs?client_id=" + urllib.parse.quote(client_id)
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(entries, ensure_ascii=False).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST"
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=3):
+            pass
+    except (OSError, ValueError):
+        return   # gönderilemedi: satırlar kuyrukta kalır, bir sonraki seferde tekrar denenir
+    for _ in range(len(entries)):
+        pending.popleft()
+
+
+def api_post(path, data, content_type="application/json"):
+    """API'ye POST gönderir. data: bayt ya da açık dosya (dosya parça parça gönderilir)."""
+    request = urllib.request.Request(API_URL + path, data=data, method="POST",
+                                     headers={"Content-Type": content_type})
+    if hasattr(data, "read"):
+        request.add_header("Content-Length", str(os.fstat(data.fileno()).st_size))
+    with urllib.request.urlopen(request, timeout=60):
+        pass
+
+
+def handle_restores():
+    """API'deki bekleyen geri yükleme isteklerini (yerel hedefli işler) yerine getirir."""
+    client_id = settings["client_id"]
+    if not client_id:
+        return
+    try:
+        url = API_URL + "/restore/pending?client_id=" + urllib.parse.quote(client_id)
+        with urllib.request.urlopen(url, timeout=5) as response:
+            requests_ = json.loads(response.read().decode("utf-8"))
+    except (OSError, ValueError):
+        return   # API'ye ulaşılamadı: bir sonraki turda tekrar sorulur
+
+    for r in requests_:
+        base = "/restore/requests/%d" % r["id"]
+        try:
+            if r["kind"] == "list":
+                # Hedef klasördeki dosyalar, klasöre göre yollarıyla
+                files = []
+                for path in list_files(r["target"]):
+                    info = os.stat(lp(path))
+                    files.append({
+                        "path": os.path.relpath(path, r["target"]).replace(os.sep, "/"),
+                        "size": info.st_size,
+                        "modified": datetime.fromtimestamp(info.st_mtime).isoformat(timespec="seconds")
+                    })
+                api_post(base + "/list", json.dumps(files, ensure_ascii=False).encode("utf-8"))
+                log.info("Restore: file list sent: %s (%d files)", r["target"], len(files))
+            else:
+                # İstenen dosyanın içeriğini API'ye gönder
+                path = os.path.join(r["target"], r["path"].replace("/", os.sep))
+                with open(lp(path), "rb") as f:
+                    api_post(base + "/file", f, "application/octet-stream")
+                log.info("Restore: file sent: %s", path)
+        except Exception as error:
+            log.exception("Restore request %d failed", r["id"])
+            try:
+                api_post(base + "/error", json.dumps({"error": str(error)}).encode("utf-8"))
+            except OSError:
+                pass
+
+
+def restore_loop():
+    """Ayrı thread: 5 saniyede bir geri yükleme isteklerine bakar (yedeklemeyi bekletmesin diye)."""
+    while not stopping.wait(STATUS_REPORT_SECONDS):
+        handle_restores()
+
+
 def report_status(data):
     """Durumu API'ye gönderir; panel buradan okur."""
     client_id = settings["client_id"]
@@ -960,6 +1150,7 @@ def run():
     load_state()
     load_history()
     pool = ThreadPoolExecutor(WORKERS)
+    threading.Thread(target=restore_loop, daemon=True).start()   # geri yükleme istekleri
 
     try:
         while True:
@@ -1045,6 +1236,7 @@ def run():
             if time.time() - last_status_report >= STATUS_REPORT_SECONDS:
                 last_status_report = time.time()
                 report_status(status)
+                report_logs()
             write_history()
 
             # 1 saniye bekle; bu sırada durdurma sinyali gelirse hemen çık

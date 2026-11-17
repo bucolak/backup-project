@@ -99,7 +99,7 @@ fieldset { border: 0; padding: 0; margin: 0; display: flex; flex-direction: colu
 .section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
 .section-head h2 { font-size: 15px; font-weight: 600; }
 .list { display: flex; flex-direction: column; }
-.job { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; gap: 6px 12px; align-items: center; padding: 14px 16px; }
+.job { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto auto; gap: 6px 12px; align-items: center; padding: 14px 16px; }
 .job + .job { border-top: 1px solid var(--line); }
 .route { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .route span { overflow-wrap: anywhere; }
@@ -112,6 +112,16 @@ fieldset { border: 0; padding: 0; margin: 0; display: flex; flex-direction: colu
 .del:hover { color: var(--err); background: var(--err-soft); }
 .edit { border: 1px solid var(--line); background: var(--surface); color: var(--fg); font-size: 13px; padding: 4px 10px; border-radius: 6px; }
 .edit:hover { border-color: var(--accent); color: var(--accent); }
+
+/* Geri yükleme */
+.restore-files { display: flex; flex-direction: column; max-height: 420px; overflow-y: auto; }
+.rfile { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; gap: 4px 12px; align-items: center; padding: 8px 16px; font-size: 13px; }
+.rfile + .rfile { border-top: 1px solid var(--line); }
+.rfile .name { font-family: var(--font-mono); overflow-wrap: anywhere; min-width: 0; }
+.rfile .meta { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.rfile .rstate { font-size: 12px; color: var(--accent); }
+.rfile .rstate.err { color: var(--err); }
+.restore-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 16px; border-top: 1px solid var(--line); }
 /* Durum: son sonuç ve ilerleme */
 .job-status { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--muted); }
 .job-status .line { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: center; }
@@ -125,6 +135,30 @@ fieldset { border: 0; padding: 0; margin: 0; display: flex; flex-direction: colu
 .bar { height: 6px; background: var(--surface-2); border-radius: 3px; overflow: hidden; }
 .bar i { display: block; height: 100%; background: var(--accent); }
 .file .pct { text-align: right; font-variant-numeric: tabular-nums; }
+/* Sekmeler */
+.tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--line); }
+.tab { border: 0; background: none; color: var(--muted); padding: 10px 14px; border-bottom: 2px solid transparent; margin-bottom: -1px; font-weight: 500; }
+.tab[aria-selected="true"] { color: var(--fg); border-bottom-color: var(--accent); }
+
+/* Loglar */
+.filters { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; }
+.filters .field { min-width: 160px; }
+.logs { display: flex; flex-direction: column; }
+.log { display: grid; grid-template-columns: 170px 110px 70px minmax(0, 1fr); gap: 4px 12px; padding: 9px 16px; align-items: start; font-size: 13px; }
+.log + .log { border-top: 1px solid var(--line); }
+.log time { font-family: var(--font-mono); font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.log .client { font-weight: 600; color: var(--accent); overflow-wrap: anywhere; }
+.lvl { font-family: var(--font-mono); font-size: 11px; font-weight: 600; padding: 1px 6px; border-radius: 4px; text-align: center; background: var(--surface-2); color: var(--muted); }
+.lvl.ERROR { background: var(--err-soft); color: var(--err); }
+.lvl.WARNING { background: var(--err-soft); color: var(--err); opacity: .8; }
+.log .msg { min-width: 0; overflow-wrap: anywhere; }
+.log details { margin-top: 4px; }
+.log summary { cursor: pointer; color: var(--err); font-size: 12px; }
+.log pre { margin: 6px 0 0; padding: 10px; border-radius: 6px; font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 640px) {
+  .log { grid-template-columns: auto auto auto; }
+  .log .msg { grid-column: 1 / -1; }
+}
 .empty { padding: 28px 16px; text-align: center; color: var(--muted); }
 .empty b { color: var(--fg); font-weight: 500; }
 
@@ -135,7 +169,9 @@ pre { margin: 0; padding: 14px 16px; overflow-x: auto; font-family: var(--font-m
 
 @media (max-width: 520px) {
   .row { grid-template-columns: minmax(0, 1fr); }
-  .job { grid-template-columns: minmax(0, 1fr) auto auto; }
+  .job { grid-template-columns: minmax(0, 1fr) auto auto auto; }
+  .rfile { grid-template-columns: auto minmax(0, 1fr); }
+  .rfile .meta, .rfile .rstate { grid-column: 2; }
   .job .route { grid-column: 1 / -1; }
   .job .chip { grid-column: 1; justify-self: start; }
 }
@@ -149,6 +185,13 @@ pre { margin: 0; padding: 14px 16px; overflow-x: auto; font-family: var(--font-m
     </div>
     <button class="add-btn" id="add-btn" type="button" aria-expanded="false" aria-controls="job-form" aria-label="Yeni yedekleme ekle">+</button>
   </header>
+
+  <nav class="tabs" role="tablist">
+    <button class="tab" type="button" role="tab" id="tab-jobs" aria-selected="true">İşler</button>
+    <button class="tab" type="button" role="tab" id="tab-logs" aria-selected="false">Loglar</button>
+  </nav>
+
+  <div id="jobs-view" style="display:flex;flex-direction:column;gap:20px">
 
   <form class="box" id="job-form" hidden novalidate>
     <h2 id="form-title">Yeni yedekleme</h2>
@@ -172,6 +215,20 @@ pre { margin: 0; padding: 14px 16px; overflow-x: auto; font-family: var(--font-m
     <div class="field">
       <label for="target" id="target-label">Hedef klasör</label>
       <input class="path" type="text" id="target" placeholder="D:\Yedek\Belgeler" autocomplete="off" spellcheck="false">
+    </div>
+    <div class="field">
+      <label for="mode">İşlem</label>
+      <select id="mode">
+        <option value="copy">Kopyala (kaynaktaki dosyalar kalır)</option>
+        <option value="move">Taşı (dosyalar hedefe alınınca kaynaktan silinir)</option>
+      </select>
+    </div>
+    <div class="field">
+      <label for="compression">Sıkıştırma</label>
+      <select id="compression">
+        <option value="none">Zipsiz (dosyalar olduğu gibi)</option>
+        <option value="zip">Zip'li (zip olmayan her dosya ziplenir, .zip dosyalar olduğu gibi)</option>
+      </select>
     </div>
 
     <div class="row">
@@ -215,6 +272,19 @@ pre { margin: 0; padding: 14px 16px; overflow-x: auto; font-family: var(--font-m
   </section>
   <div class="box list" id="list"></div>
 
+  <div class="box" id="restore" hidden>
+    <div class="code-head">
+      <span><b>Geri yükle</b> <span class="mono" id="restore-job"></span></span>
+      <button class="btn" type="button" id="restore-close">Kapat</button>
+    </div>
+    <p class="hint" id="restore-msg" style="padding:10px 16px"></p>
+    <div class="restore-files" id="restore-files"></div>
+    <div class="restore-foot" id="restore-foot" hidden>
+      <label class="hint"><input type="checkbox" id="restore-all"> Tümünü seç</label>
+      <button class="btn primary" type="button" id="restore-download">Seçilenleri indir</button>
+    </div>
+  </div>
+
   <div class="box">
     <div class="code-head">
       <span class="mono">config.json</span>
@@ -226,12 +296,35 @@ pre { margin: 0; padding: 14px 16px; overflow-x: auto; font-family: var(--font-m
     <pre id="config"></pre>
   </div>
   <p class="hint">Değişiklikler API'ye kaydedilir; Windows servisi 30 saniye içinde alır. Bu önizleme sadece bilgi içindir.</p>
+  </div>
+
+  <div id="logs-view" hidden style="display:flex;flex-direction:column;gap:16px">
+    <div class="filters">
+      <div class="field">
+        <label for="log-client">Makine</label>
+        <select id="log-client"><option value="">Tümü</option></select>
+      </div>
+      <div class="field">
+        <label for="log-level">Seviye</label>
+        <select id="log-level">
+          <option value="">Tümü</option>
+          <option value="INFO">INFO</option>
+          <option value="WARNING">WARNING</option>
+          <option value="ERROR">ERROR</option>
+        </select>
+      </div>
+    </div>
+    <p class="error" id="log-error" role="alert" hidden></p>
+    <div class="box logs" id="logs"></div>
+    <p class="hint">En yeni 500 satır gösterilir, 5 saniyede bir yenilenir. API son 30 günün loglarını tutar.</p>
+  </div>
 </div>
 
 <script>
 const DAYS = ["pzt", "sal", "car", "per", "cum", "cmt", "paz"];
 const DAY_LABELS = ["Pzt", "Sal", "Çar", "Per", "Cum", "Cmt", "Paz"];
 const TARGET_TYPES = { local: "Yerel", pcloud: "pCloud", gdrive: "Google Drive" };
+const MODES = { copy: "Kopyala", move: "Taşı" };
 const API_URL = "";   // arayüz API'nin içinden açılıyor; istekler aynı adrese gidiyor
 
 const $ = (id) => document.getElementById(id);
@@ -324,6 +417,162 @@ function statusHtml(j) {
   return `<div class="job-status">${html}</div>`;
 }
 
+// ---- Loglar sekmesi ----
+function loadLogs() {
+  const params = new URLSearchParams();
+  if ($("log-client").value) params.set("client_id", $("log-client").value);
+  if ($("log-level").value) params.set("level", $("log-level").value);
+  fetch(API_URL + "/logs?" + params)
+    .then((response) => {
+      if (!response.ok) throw new Error("API hata döndürdü: HTTP " + response.status);
+      return response.json();
+    })
+    .then((rows) => {
+      $("log-error").hidden = true;
+      $("logs").innerHTML = rows.length ? rows.map((r) => `
+        <div class="log">
+          <time>${esc(timeText(r.time))}</time>
+          <span class="client">${esc(r.client_id)}</span>
+          <span class="lvl ${esc(r.level)}">${esc(r.level)}</span>
+          <div class="msg">${esc(r.message)}${r.error ? `<details><summary>Hata ayrıntısı</summary><pre>${esc(r.error)}</pre></details>` : ""}</div>
+        </div>`).join("")
+        : `<div class="empty">Bu filtreye uyan log yok.</div>`;
+    })
+    .catch((error) => {
+      $("log-error").textContent = "Loglar alınamadı. " + error.message;
+      $("log-error").hidden = false;
+    });
+}
+
+// Makine filtresindeki seçenekler: işlerde ve durumlarda geçen makine adları
+function updateLogClients() {
+  const names = [...new Set([...jobs.map((j) => j.client_id), ...Object.keys(statuses)])].sort();
+  const select = $("log-client");
+  const current = select.value;
+  select.innerHTML = `<option value="">Tümü</option>` + names.map((n) => `<option value="${esc(n)}">${esc(n)}</option>`).join("");
+  select.value = names.includes(current) ? current : "";
+}
+
+function showTab(name) {
+  const logs = name === "logs";
+  $("jobs-view").hidden = logs;
+  $("logs-view").hidden = !logs;
+  $("tab-jobs").setAttribute("aria-selected", String(!logs));
+  $("tab-logs").setAttribute("aria-selected", String(logs));
+  addBtn.hidden = logs;   // + butonu sadece İşler sekmesinde
+  if (logs) { updateLogClients(); loadLogs(); }
+}
+
+$("tab-jobs").addEventListener("click", () => showTab("jobs"));
+$("tab-logs").addEventListener("click", () => showTab("logs"));
+$("log-client").addEventListener("change", loadLogs);
+$("log-level").addEventListener("change", loadLogs);
+setInterval(() => { if (!$("logs-view").hidden) loadLogs(); }, 5000);   // sekme açıkken 5 saniyede bir yenile
+
+// ---- Geri yükleme ----
+// pCloud işlerinde API dosyaları kendisi getirir; yerel işlerde servis 5 saniye içinde gönderir.
+let restoreJob = null;
+let restoreRun = 0;   // pencere kapatılıp başka iş açılırsa eski isteklerin cevapları yok sayılsın
+
+function sizeText(bytes) {
+  if (bytes < 1024) return bytes + " B";
+  if (bytes < 1048576) return (bytes / 1024).toFixed(1) + " KB";
+  if (bytes < 1073741824) return (bytes / 1048576).toFixed(1) + " MB";
+  return (bytes / 1073741824).toFixed(2) + " GB";
+}
+
+function apiJson(url, options) {
+  return fetch(API_URL + url, options).then((response) => {
+    if (!response.ok) throw new Error("API hata döndürdü: HTTP " + response.status);
+    return response.json();
+  });
+}
+
+function postJson(url, body) {
+  return apiJson(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+}
+
+// İstek "pending" olduğu sürece 2 saniyede bir sor; bitince sonucu döndür
+function waitRequest(id, run) {
+  return apiJson("/restore/requests/" + id).then((r) => {
+    if (run !== restoreRun) throw new Error("cancelled");
+    if (r.status !== "pending") return r;
+    return new Promise((resolve) => setTimeout(resolve, 2000)).then(() => waitRequest(id, run));
+  });
+}
+
+function openRestore(i) {
+  const job = jobs[i];
+  const run = ++restoreRun;
+  restoreJob = { client_id: job.client_id, source: job.source, target: job.target };
+  $("restore").hidden = false;
+  $("restore-job").textContent = job.client_id + " · " + TARGET_TYPES[job.target_type || "local"] + " · " + job.target;
+  $("restore-files").innerHTML = "";
+  $("restore-foot").hidden = true;
+  $("restore-all").checked = false;
+  $("restore-msg").textContent = (job.target_type === "pcloud")
+    ? "Dosyalar pCloud'dan listeleniyor…"
+    : "Dosya listesi servisten isteniyor (servis 5 saniye içinde gönderir)…";
+  $("restore").scrollIntoView({ behavior: "smooth", block: "nearest" });
+
+  postJson("/restore/list", restoreJob)
+    .then((r) => waitRequest(r.id, run))
+    .then((r) => {
+      if (r.status === "error") throw new Error(r.error);
+      const files = r.files.sort((a, b) => a.path.localeCompare(b.path));
+      $("restore-msg").textContent = files.length ? files.length + " dosya. İndirmek istediklerini seç." : "Hedefte dosya yok.";
+      $("restore-files").innerHTML = files.map((f, n) => `
+        <label class="rfile">
+          <input type="checkbox" data-path="${esc(f.path)}">
+          <span class="name">${esc(f.path)}</span>
+          <span class="meta">${sizeText(f.size)} · ${esc(timeText(f.modified))}</span>
+          <span class="rstate" id="rstate-${n}"></span>
+        </label>`).join("");
+      $("restore-foot").hidden = !files.length;
+    })
+    .catch((error) => {
+      if (error.message === "cancelled") return;
+      $("restore-msg").textContent = "Liste alınamadı: " + error.message;
+    });
+}
+
+function downloadOne(box, run) {
+  const state = box.closest(".rfile").querySelector(".rstate");
+  state.classList.remove("err");
+  state.textContent = "Hazırlanıyor…";
+  postJson("/restore/file", { ...restoreJob, path: box.dataset.path })
+    .then((r) => waitRequest(r.id, run))
+    .then((r) => {
+      if (r.status === "error") throw new Error(r.error);
+      // Tarayıcının normal indirmesi: dosya İndirilenler klasörüne iner
+      const a = document.createElement("a");
+      a.href = API_URL + "/restore/download/" + r.id;
+      a.download = "";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      state.textContent = "İndirildi";
+    })
+    .catch((error) => {
+      if (error.message === "cancelled") return;
+      state.classList.add("err");
+      state.textContent = "Hata: " + error.message;
+    });
+}
+
+$("restore-download").addEventListener("click", () => {
+  const run = restoreRun;
+  $("restore-files").querySelectorAll("input:checked").forEach((box) => downloadOne(box, run));
+});
+$("restore-all").addEventListener("change", (e) => {
+  $("restore-files").querySelectorAll("input").forEach((box) => { box.checked = e.target.checked; });
+});
+$("restore-close").addEventListener("click", () => {
+  restoreRun++;
+  restoreJob = null;
+  $("restore").hidden = true;
+});
+
 function showApiError(message) {
   $("api-error").textContent = message;
   $("api-error").hidden = false;
@@ -403,7 +652,9 @@ function readForm() {
     source: $("source").value.trim(),
     target_type: $("target-type").value,
     target: $("target").value.trim(),
-    schedule
+    schedule,
+    mode: $("mode").value,
+    compression: $("compression").value
   };
 }
 
@@ -412,8 +663,9 @@ function render() {
   $("list").innerHTML = jobs.length
     ? jobs.map((j, i) => `
       <div class="job">
-        <div class="route mono"><span class="client">${esc(j.client_id)}</span><span>${esc(j.source)}</span><span class="to"><span class="type">${TARGET_TYPES[j.target_type || "local"]}</span>${esc(j.target)}</span></div>
+        <div class="route mono"><span class="client">${esc(j.client_id)}</span><span>${esc(j.source)}</span><span class="to"><span class="type">${MODES[j.mode || "copy"]}${(j.compression || "none") === "zip" ? " · Zip" : ""} · ${TARGET_TYPES[j.target_type || "local"]}</span>${esc(j.target)}</span></div>
         <span class="chip">${esc(scheduleText(j.schedule))}</span>
+        <button class="edit restore-btn" type="button" data-i="${i}">Geri yükle</button>
         <button class="edit" type="button" data-i="${i}">Düzenle</button>
         <button class="del" type="button" data-i="${i}" aria-label="${esc(j.source)} işini sil">×</button>
         ${statusHtml(j)}
@@ -428,6 +680,8 @@ function fillForm(job) {
   $("source").value = job.source;
   $("target-type").value = job.target_type || "local";
   $("target").value = job.target;
+  $("mode").value = job.mode || "copy";
+  $("compression").value = job.compression || "none";
   updateTargetField();
   $("type").value = job.schedule.type;
   if (job.schedule.time) $("time").value = job.schedule.time;
@@ -477,6 +731,11 @@ form.addEventListener("submit", (e) => {
 });
 
 $("list").addEventListener("click", (e) => {
+  const restoreBtn = e.target.closest(".restore-btn");
+  if (restoreBtn) {
+    openRestore(Number(restoreBtn.dataset.i));
+    return;
+  }
   const editBtn = e.target.closest(".edit");
   if (editBtn) {
     openForm(true, Number(editBtn.dataset.i));

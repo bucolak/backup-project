@@ -9,29 +9,18 @@
     "jobs": [
         {
             "client_id": "windows-pc",
-            "source": "C:\\YedekTest\\Kaynak",
+            "source": "C:\\YedekTest\\Kaynak\\new",
             "target_type": "pcloud",
             "target": "backup-project/windows/test",
             "schedule": {
                 "type": "weekly",
-                "time": "15:53",
+                "time": "10:48",
                 "days": [
-                    "pzt"
+                    "sal"
                 ]
-            }
-        },
-        {
-            "client_id": "windows-pc",
-            "source": "C:\\YedekTest/Kaynak",
-            "target_type": "pcloud",
-            "target": "backup-project/windows/test",
-            "schedule": {
-                "type": "weekly",
-                "time": "15:58",
-                "days": [
-                    "pzt"
-                ]
-            }
+            },
+            "mode": "copy",
+            "compression": "none"
         }
     ]
 }
