@@ -1,4 +1,4 @@
-# Automated Backup System
+# Automated Backup System 
 
 A cross-platform, scheduled backup system that runs as a background service on Windows and Linux machines, verifies every file it copies, and can be managed remotely from a web panel through a REST API.
 
