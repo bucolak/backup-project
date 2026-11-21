@@ -5,11 +5,3 @@ venv/
 # Python cache files
 __pycache__/
 *.py[cod]
-
-# Backup test data
-source/
-destination/
-src/config.json
-backup.log
-windows-service/backup-agent.exe
-windows-service/logs/

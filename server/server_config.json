@@ -1,6 +1,0 @@
-{
-    "provider": "pcloud",
-    "options": {
-        "root_name": "backup-project"
-    }
-}
