@@ -4,23 +4,25 @@
         "log_retention_days": 30,
         "history_max": 1000,
         "min_free_mb": 100,
-        "client_id": "windows-pc"
+        "client_id": "windows-pc",
+        "backup_type": "full"
     },
     "jobs": [
         {
             "client_id": "windows-pc",
-            "source": "C:\\YedekTest\\Kaynak\\new",
+            "source": "C:\\YedekTest\\Kaynak",
             "target_type": "pcloud",
             "target": "backup-project/windows/test",
             "schedule": {
                 "type": "weekly",
-                "time": "10:48",
+                "time": "22:29",
                 "days": [
-                    "sal"
+                    "cmt"
                 ]
             },
-            "mode": "copy",
-            "compression": "none"
+            "mode": "move",
+            "compression": "none",
+            "backup_type": "incremental"
         }
     ]
 }

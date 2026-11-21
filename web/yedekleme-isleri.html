@@ -78,6 +78,23 @@ form h2 { font-size: 16px; font-weight: 600; }
 .field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
 .field label, .field legend { font-size: 13px; font-weight: 500; color: var(--muted); }
 .row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+
+/* Mod seçimi: yan yana iki düğme, seçili olan vurgulu */
+.seg { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.seg label { cursor: pointer; }
+.seg input { position: absolute; opacity: 0; pointer-events: none; }
+.seg span { display: flex; align-items: center; justify-content: center; min-height: 40px; padding: 6px 10px; font-size: 14px; color: var(--fg); background: var(--surface); text-align: center; }
+.seg label + label span { border-left: 1px solid var(--line); }
+.seg input:checked + span { background: var(--accent); color: var(--accent-fg); font-weight: 600; }
+.seg input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: -2px; }
+.seg input:disabled + span { cursor: not-allowed; opacity: .55; }
+.legend-row { display: flex; align-items: center; gap: 6px; }
+
+/* Bilgi işareti: üzerine gelince (ya da dokununca) açıklama çıkar */
+.tip { position: relative; display: inline-grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; border: 1.5px solid var(--muted); color: var(--muted); background: none; font-size: 11px; font-weight: 700; line-height: 1; padding: 0; cursor: help; }
+.tip:hover, .tip:focus-visible { border-color: var(--accent); color: var(--accent); }
+.tip::after { content: attr(data-tip); position: absolute; left: 50%; bottom: calc(100% + 8px); transform: translateX(-50%); width: max-content; max-width: 280px; white-space: pre-line; text-align: left; padding: 8px 10px; border-radius: 6px; background: var(--fg); color: var(--surface); font-size: 12.5px; font-weight: 400; line-height: 1.45; box-shadow: 0 4px 14px rgba(0,0,0,.18); opacity: 0; visibility: hidden; pointer-events: none; z-index: 10; }
+.tip:hover::after, .tip:focus::after { opacity: 1; visibility: visible; }
 input[type="text"], input[type="password"], input[type="time"], input[type="number"], select {
   font: inherit; color: var(--fg); background: var(--surface); border: 1px solid var(--line);
   border-radius: 6px; padding: 8px 10px; min-height: 40px; width: 100%; min-width: 0;
@@ -103,7 +120,7 @@ fieldset { border: 0; padding: 0; margin: 0; display: flex; flex-direction: colu
 .section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
 .section-head h2 { font-size: 15px; font-weight: 600; }
 .list { display: flex; flex-direction: column; }
-.job { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto auto; gap: 6px 12px; align-items: center; padding: 14px 16px; }
+.job { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; gap: 6px 12px; align-items: center; padding: 14px 16px; }
 .job + .job { border-top: 1px solid var(--line); }
 .route { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .route span { overflow-wrap: anywhere; }
@@ -118,13 +135,24 @@ fieldset { border: 0; padding: 0; margin: 0; display: flex; flex-direction: colu
 .edit:hover { border-color: var(--accent); color: var(--accent); }
 
 /* Geri yükleme */
-.restore-files { display: flex; flex-direction: column; max-height: 420px; overflow-y: auto; }
 .rfile { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; gap: 4px 12px; align-items: center; padding: 8px 16px; font-size: 13px; }
 .rfile + .rfile { border-top: 1px solid var(--line); }
 .rfile .name { font-family: var(--font-mono); overflow-wrap: anywhere; min-width: 0; }
 .rfile .meta { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
 .rfile .rstate { font-size: 12px; color: var(--accent); }
 .rfile .rstate.err { color: var(--err); }
+/* Geri yükle sekmesi: iş -> tarih klasörleri -> dosyalar */
+.rjob-head { padding: 12px 16px; border-bottom: 1px solid var(--line); font-size: 13px; }
+.rjob-head .client { font-weight: 600; color: var(--accent); }
+.rjob .msg { padding: 12px 16px; margin: 0; }
+.rfolder + .rfolder { border-top: 1px solid var(--line); }
+.rf-toggle { display: flex; width: 100%; align-items: center; gap: 10px; padding: 11px 16px; border: 0; background: none; color: var(--fg); font: inherit; text-align: left; cursor: pointer; }
+.rf-toggle:hover { background: var(--surface-2); }
+.rf-toggle .arrow { display: inline-block; width: 12px; color: var(--muted); transition: transform .15s ease; }
+.rf-toggle[aria-expanded="true"] .arrow { transform: rotate(90deg); }
+.rf-toggle .fname { font-family: var(--font-mono); font-size: 14px; font-weight: 600; }
+.rf-toggle .meta { margin-left: auto; color: var(--muted); font-size: 12px; }
+.rf-files { border-top: 1px dashed var(--line); padding-left: 22px; background: var(--surface); }
 .restore-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 16px; border-top: 1px solid var(--line); }
 /* Durum: son sonuç ve ilerleme */
 .job-status { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--muted); }
@@ -173,7 +201,7 @@ pre { margin: 0; padding: 14px 16px; overflow-x: auto; font-family: var(--font-m
 
 @media (max-width: 520px) {
   .row { grid-template-columns: minmax(0, 1fr); }
-  .job { grid-template-columns: minmax(0, 1fr) auto auto auto; }
+  .job { grid-template-columns: minmax(0, 1fr) auto auto; }
   .rfile { grid-template-columns: auto minmax(0, 1fr); }
   .rfile .meta, .rfile .rstate { grid-column: 2; }
   .job .route { grid-column: 1 / -1; }
@@ -213,6 +241,7 @@ pre { margin: 0; padding: 14px 16px; overflow-x: auto; font-family: var(--font-m
   <nav class="tabs" role="tablist">
     <button class="tab" type="button" role="tab" id="tab-jobs" aria-selected="true">İşler</button>
     <button class="tab" type="button" role="tab" id="tab-logs" aria-selected="false">Loglar</button>
+    <button class="tab" type="button" role="tab" id="tab-restore" aria-selected="false">Geri yükle</button>
   </nav>
 
   <div id="jobs-view" style="display:flex;flex-direction:column;gap:20px">
@@ -240,20 +269,29 @@ pre { margin: 0; padding: 14px 16px; overflow-x: auto; font-family: var(--font-m
       <label for="target" id="target-label">Hedef klasör</label>
       <input class="path" type="text" id="target" placeholder="D:\Yedek\Belgeler" autocomplete="off" spellcheck="false">
     </div>
-    <div class="field">
-      <label for="mode">İşlem</label>
-      <select id="mode">
-        <option value="copy">Kopyala (kaynaktaki dosyalar kalır)</option>
-        <option value="move">Taşı (dosyalar hedefe alınınca kaynaktan silinir)</option>
-      </select>
+    <div class="row">
+      <fieldset class="field">
+        <div class="legend-row"><legend>Yedek türü</legend><button class="tip" type="button" aria-label="Yedek türü hakkında" data-tip="Her çalışma hedefte tarih-saat adlı yeni bir klasöre yazılır (örn. 2026-11-23_02-00-00).&#10;Full: kaynaktaki bütün dosyalar o klasöre kopyalanır.&#10;Incremental: sadece daha önce yedeklenmemiş (yeni ya da değişmiş) dosyalar kopyalanır; kopyalanacak dosya yoksa klasör oluşmaz. Taşı ile birlikte seçilirse, daha önce yedeklenmiş dosyalar kopyalanmaz; önceki yedekteki kopya doğrulanıp kaynaktan silinir.">!</button></div>
+        <div class="seg" role="radiogroup" aria-label="Yedek türü">
+          <label><input type="radio" name="backup-type" value="full" checked><span>Full</span></label>
+          <label><input type="radio" name="backup-type" value="incremental"><span>Incremental</span></label>
+        </div>
+      </fieldset>
+      <fieldset class="field">
+        <div class="legend-row"><legend>İşlem</legend><button class="tip" type="button" aria-label="İşlem hakkında" data-tip="Kopyala: dosyalar hedefe kopyalanır, kaynakta kalır.&#10;Taşı: dosyalar hedefe kopyalanıp doğrulandıktan sonra kaynaktan silinir.">!</button></div>
+        <div class="seg" role="radiogroup" aria-label="İşlem">
+          <label><input type="radio" name="mode" value="copy" checked><span>Kopyala</span></label>
+          <label><input type="radio" name="mode" value="move"><span>Taşı</span></label>
+        </div>
+      </fieldset>
     </div>
-    <div class="field">
-      <label for="compression">Sıkıştırma</label>
-      <select id="compression">
-        <option value="none">Zipsiz (dosyalar olduğu gibi)</option>
-        <option value="zip">Zip'li (zip olmayan her dosya ziplenir, .zip dosyalar olduğu gibi)</option>
-      </select>
-    </div>
+    <fieldset class="field">
+      <div class="legend-row"><legend>Sıkıştırma</legend><button class="tip" type="button" aria-label="Sıkıştırma hakkında" data-tip="Zipsiz: dosyalar olduğu gibi aktarılır.&#10;Zip'li: zip olmayan her dosya ayrı ayrı ziplenir (a.txt → a.txt.zip); .zip dosyalar olduğu gibi aktarılır.">!</button></div>
+      <div class="seg" role="radiogroup" aria-label="Sıkıştırma">
+        <label><input type="radio" name="compression" value="none" checked><span>Zipsiz</span></label>
+        <label><input type="radio" name="compression" value="zip"><span>Zip'li</span></label>
+      </div>
+    </fieldset>
 
     <div class="row">
       <div class="field">
@@ -296,19 +334,6 @@ pre { margin: 0; padding: 14px 16px; overflow-x: auto; font-family: var(--font-m
   </section>
   <div class="box list" id="list"></div>
 
-  <div class="box" id="restore" hidden>
-    <div class="code-head">
-      <span><b>Geri yükle</b> <span class="mono" id="restore-job"></span></span>
-      <button class="btn" type="button" id="restore-close">Kapat</button>
-    </div>
-    <p class="hint" id="restore-msg" style="padding:10px 16px"></p>
-    <div class="restore-files" id="restore-files"></div>
-    <div class="restore-foot" id="restore-foot" hidden>
-      <label class="hint"><input type="checkbox" id="restore-all"> Tümünü seç</label>
-      <button class="btn primary" type="button" id="restore-download">Seçilenleri indir</button>
-    </div>
-  </div>
-
   <div class="box">
     <div class="code-head">
       <span class="mono">config.json</span>
@@ -342,12 +367,28 @@ pre { margin: 0; padding: 14px 16px; overflow-x: auto; font-family: var(--font-m
     <div class="box logs" id="logs"></div>
     <p class="hint">En yeni 500 satır gösterilir, 5 saniyede bir yenilenir. API son 30 günün loglarını tutar.</p>
   </div>
+
+  <div id="restore-view" hidden style="display:flex;flex-direction:column;gap:16px">
+    <div class="filters">
+      <div class="field">
+        <label for="restore-client">Makine</label>
+        <select id="restore-client"><option value="">Makine seç</option></select>
+      </div>
+    </div>
+    <div id="restore-jobs" style="display:flex;flex-direction:column;gap:16px"></div>
+    <div class="box restore-foot" id="restore-foot" hidden>
+      <span class="hint" id="restore-count">0 dosya seçili</span>
+      <button class="btn primary" type="button" id="restore-download">Seçilenleri indir</button>
+    </div>
+  </div>
 </div>
 
 <script>
 const DAYS = ["pzt", "sal", "car", "per", "cum", "cmt", "paz"];
 const DAY_LABELS = ["Pzt", "Sal", "Çar", "Per", "Cum", "Cmt", "Paz"];
 const TARGET_TYPES = { local: "Yerel", pcloud: "pCloud", gdrive: "Google Drive" };
+// Hedef türünün görünen adı; listede adı olmayan (yeni eklenmiş) bir tür kendi adıyla görünür
+const typeLabel = (type) => TARGET_TYPES[type || "local"] || type;
 const MODES = { copy: "Kopyala", move: "Taşı" };
 const API_URL = "";   // arayüz API'nin içinden açılıyor; istekler aynı adrese gidiyor
 
@@ -478,25 +519,28 @@ function updateLogClients() {
 }
 
 function showTab(name) {
-  const logs = name === "logs";
-  $("jobs-view").hidden = logs;
-  $("logs-view").hidden = !logs;
-  $("tab-jobs").setAttribute("aria-selected", String(!logs));
-  $("tab-logs").setAttribute("aria-selected", String(logs));
-  addBtn.hidden = logs;   // + butonu sadece İşler sekmesinde
-  if (logs) { updateLogClients(); loadLogs(); }
+  ["jobs", "logs", "restore"].forEach((tab) => {
+    $(tab + "-view").hidden = tab !== name;
+    $("tab-" + tab).setAttribute("aria-selected", String(tab === name));
+  });
+  addBtn.hidden = name !== "jobs";   // + butonu sadece İşler sekmesinde
+  if (name === "logs") { updateLogClients(); loadLogs(); }
+  if (name === "restore") updateRestoreClients();
 }
 
 $("tab-jobs").addEventListener("click", () => showTab("jobs"));
 $("tab-logs").addEventListener("click", () => showTab("logs"));
+$("tab-restore").addEventListener("click", () => showTab("restore"));
 $("log-client").addEventListener("change", loadLogs);
 $("log-level").addEventListener("change", loadLogs);
 setInterval(() => { if (loggedIn && !$("logs-view").hidden) loadLogs(); }, 5000);   // sekme açıkken 5 saniyede bir yenile
 
 // ---- Geri yükleme ----
-// pCloud işlerinde API dosyaları kendisi getirir; yerel işlerde servis 5 saniye içinde gönderir.
-let restoreJob = null;
-let restoreRun = 0;   // pencere kapatılıp başka iş açılırsa eski isteklerin cevapları yok sayılsın
+// Makine seçilir; o makinenin her işi için hedefteki tarih klasörleri listelenir, klasör açılınca dosyaları görünür.
+// Hedef türü ne olursa olsun liste ve dosyalar servisten gelir (servis 5 saniyede bir sorar).
+let restoreRun = 0;      // başka makine seçilirse eski isteklerin cevapları yok sayılsın
+let restoreJobs = [];    // seçili makinenin işleri (indirmede hangi işe ait olduğu buradan bulunur)
+const FOLDER_RE = /^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}$/;   // servisin oluşturduğu tarih klasörü adı
 
 function sizeText(bytes) {
   if (bytes < 1024) return bytes + " B";
@@ -525,46 +569,87 @@ function waitRequest(id, run) {
   });
 }
 
-function openRestore(i) {
-  const job = jobs[i];
-  const run = ++restoreRun;
-  restoreJob = { client_id: job.client_id, source: job.source, target: job.target };
-  $("restore").hidden = false;
-  $("restore-job").textContent = job.client_id + " · " + TARGET_TYPES[job.target_type || "local"] + " · " + job.target;
-  $("restore-files").innerHTML = "";
-  $("restore-foot").hidden = true;
-  $("restore-all").checked = false;
-  $("restore-msg").textContent = (job.target_type === "pcloud")
-    ? "Dosyalar pCloud'dan listeleniyor…"
-    : "Dosya listesi servisten isteniyor (servis 5 saniye içinde gönderir)…";
-  $("restore").scrollIntoView({ behavior: "smooth", block: "nearest" });
+// Makine listesi: işi olan makineler
+function updateRestoreClients() {
+  const names = [...new Set(jobs.map((j) => j.client_id))].sort();
+  const select = $("restore-client");
+  const current = select.value;
+  select.innerHTML = `<option value="">Makine seç</option>` + names.map((n) => `<option value="${esc(n)}">${esc(n)}</option>`).join("");
+  select.value = names.includes(current) ? current : "";
+}
 
-  postJson("/restore/list", restoreJob)
-    .then((r) => waitRequest(r.id, run))
-    .then((r) => {
-      if (r.status === "error") throw new Error(r.error);
-      const files = r.files.sort((a, b) => a.path.localeCompare(b.path));
-      $("restore-msg").textContent = files.length ? files.length + " dosya. İndirmek istediklerini seç." : "Hedefte dosya yok.";
-      $("restore-files").innerHTML = files.map((f, n) => `
-        <label class="rfile">
-          <input type="checkbox" data-path="${esc(f.path)}">
-          <span class="name">${esc(f.path)}</span>
-          <span class="meta">${sizeText(f.size)} · ${esc(timeText(f.modified))}</span>
-          <span class="rstate" id="rstate-${n}"></span>
-        </label>`).join("");
-      $("restore-foot").hidden = !files.length;
-    })
-    .catch((error) => {
-      if (error.message === "cancelled") return;
-      $("restore-msg").textContent = "Liste alınamadı: " + error.message;
-    });
+// Dosyaları tarih klasörlerine ayır: "2026-11-23_02-00-00/alt/a.txt" -> klasör "2026-11-23_02-00-00", ad "alt/a.txt"
+function groupByFolder(files) {
+  const groups = {};
+  files.forEach((f) => {
+    const slash = f.path.indexOf("/");
+    const first = slash > 0 ? f.path.slice(0, slash) : "";
+    const folder = FOLDER_RE.test(first) ? first : "";   // tarih klasörü dışındakiler: eski yedekler
+    const name = folder ? f.path.slice(slash + 1) : f.path;
+    (groups[folder] = groups[folder] || []).push({ ...f, name });
+  });
+  // En yeni klasör en üstte; klasörsüz eski yedekler en altta
+  return Object.keys(groups).sort((a, b) => (a === "" ? 1 : b === "" ? -1 : b.localeCompare(a)))
+    .map((folder) => ({ folder, files: groups[folder].sort((x, y) => x.name.localeCompare(y.name)) }));
+}
+
+function loadRestore() {
+  const run = ++restoreRun;
+  const client = $("restore-client").value;
+  restoreJobs = jobs.filter((j) => j.client_id === client);
+  $("restore-foot").hidden = true;
+  updateRestoreCount();
+  $("restore-jobs").innerHTML = restoreJobs.map((j, n) => `
+    <div class="box rjob" id="rjob-${n}">
+      <div class="rjob-head mono"><span class="client">${esc(j.source)}</span> → ${typeLabel(j.target_type)} · ${esc(j.target)}</div>
+      <p class="hint msg">Dosya listesi servisten isteniyor (servis 5 saniye içinde gönderir)…</p>
+    </div>`).join("");
+
+  restoreJobs.forEach((j, n) => {
+    const box = $("rjob-" + n);
+    postJson("/restore/list", { client_id: j.client_id, source: j.source, target: j.target })
+      .then((r) => waitRequest(r.id, run))
+      .then((r) => {
+        if (r.status === "error") throw new Error(r.error);
+        const groups = groupByFolder(r.files);
+        if (!groups.length) { box.querySelector(".msg").textContent = "Hedefte dosya yok."; return; }
+        box.querySelector(".msg").remove();
+        box.insertAdjacentHTML("beforeend", groups.map((g) => `
+          <div class="rfolder">
+            <button class="rf-toggle" type="button" aria-expanded="false">
+              <span class="arrow">▸</span>
+              <span class="fname">${g.folder ? esc(g.folder) : "Klasörsüz (eski yedekler)"}</span>
+              <span class="meta">${g.files.length} dosya</span>
+            </button>
+            <div class="rf-files" hidden>${g.files.map((f) => `
+              <label class="rfile">
+                <input type="checkbox" data-job="${n}" data-path="${esc(f.path)}">
+                <span class="name">${esc(f.name)}</span>
+                <span class="meta">${sizeText(f.size)} · ${esc(timeText(f.modified))}</span>
+                <span class="rstate"></span>
+              </label>`).join("")}
+            </div>
+          </div>`).join(""));
+        $("restore-foot").hidden = false;
+      })
+      .catch((error) => {
+        if (error.message === "cancelled") return;
+        box.querySelector(".msg").textContent = "Liste alınamadı: " + error.message;
+      });
+  });
+}
+
+function updateRestoreCount() {
+  const count = $("restore-jobs").querySelectorAll("input:checked").length;
+  $("restore-count").textContent = count + " dosya seçili";
 }
 
 function downloadOne(box, run) {
+  const job = restoreJobs[Number(box.dataset.job)];
   const state = box.closest(".rfile").querySelector(".rstate");
   state.classList.remove("err");
   state.textContent = "Hazırlanıyor…";
-  postJson("/restore/file", { ...restoreJob, path: box.dataset.path })
+  postJson("/restore/file", { client_id: job.client_id, source: job.source, target: job.target, path: box.dataset.path })
     .then((r) => waitRequest(r.id, run))
     .then((r) => {
       if (r.status === "error") throw new Error(r.error);
@@ -584,17 +669,18 @@ function downloadOne(box, run) {
     });
 }
 
+$("restore-client").addEventListener("change", loadRestore);
+$("restore-jobs").addEventListener("click", (e) => {
+  const toggle = e.target.closest(".rf-toggle");
+  if (!toggle) return;
+  const open = toggle.getAttribute("aria-expanded") !== "true";
+  toggle.setAttribute("aria-expanded", String(open));
+  toggle.nextElementSibling.hidden = !open;   // klasörün dosyalarını aç / kapat
+});
+$("restore-jobs").addEventListener("change", updateRestoreCount);
 $("restore-download").addEventListener("click", () => {
   const run = restoreRun;
-  $("restore-files").querySelectorAll("input:checked").forEach((box) => downloadOne(box, run));
-});
-$("restore-all").addEventListener("change", (e) => {
-  $("restore-files").querySelectorAll("input").forEach((box) => { box.checked = e.target.checked; });
-});
-$("restore-close").addEventListener("click", () => {
-  restoreRun++;
-  restoreJob = null;
-  $("restore").hidden = true;
+  $("restore-jobs").querySelectorAll("input:checked").forEach((box) => downloadOne(box, run));
 });
 
 function showApiError(message) {
@@ -623,6 +709,15 @@ function updateTargetField() {
   $("target-label").textContent = cloud ? "Buluttaki klasör" : "Hedef klasör";
   $("target").placeholder = cloud ? "backup-project/" + ($("client").value.trim() || "makine-adi") : "D:\\Yedek\\Belgeler";
 }
+
+// Mod düğmeleri: seçili değeri oku / bir değeri seç
+function getSeg(name) {
+  return form.querySelector(`input[name="${name}"]:checked`).value;
+}
+function setSeg(name, value) {
+  form.querySelector(`input[name="${name}"][value="${value}"]`).checked = true;
+}
+
 
 function updateScheduleFields() {
   const type = $("type").value;
@@ -677,8 +772,9 @@ function readForm() {
     target_type: $("target-type").value,
     target: $("target").value.trim(),
     schedule,
-    mode: $("mode").value,
-    compression: $("compression").value
+    mode: getSeg("mode"),
+    compression: getSeg("compression"),
+    backup_type: getSeg("backup-type")
   };
 }
 
@@ -687,9 +783,8 @@ function render() {
   $("list").innerHTML = jobs.length
     ? jobs.map((j, i) => `
       <div class="job">
-        <div class="route mono"><span class="client">${esc(j.client_id)}</span><span>${esc(j.source)}</span><span class="to"><span class="type">${MODES[j.mode || "copy"]}${(j.compression || "none") === "zip" ? " · Zip" : ""} · ${TARGET_TYPES[j.target_type || "local"]}</span>${esc(j.target)}</span></div>
+        <div class="route mono"><span class="client">${esc(j.client_id)}</span><span>${esc(j.source)}</span><span class="to"><span class="type">${MODES[j.mode || "copy"]}${(j.compression || "none") === "zip" ? " · Zip" : ""} · ${(j.backup_type || "full") === "incremental" ? "Incremental" : "Full"} · ${typeLabel(j.target_type)}</span>${esc(j.target)}</span></div>
         <span class="chip">${esc(scheduleText(j.schedule))}</span>
-        <button class="edit restore-btn" type="button" data-i="${i}">Geri yükle</button>
         <button class="edit" type="button" data-i="${i}">Düzenle</button>
         <button class="del" type="button" data-i="${i}" aria-label="${esc(j.source)} işini sil">×</button>
         ${statusHtml(j)}
@@ -704,8 +799,9 @@ function fillForm(job) {
   $("source").value = job.source;
   $("target-type").value = job.target_type || "local";
   $("target").value = job.target;
-  $("mode").value = job.mode || "copy";
-  $("compression").value = job.compression || "none";
+  setSeg("mode", job.mode || "copy");
+  setSeg("compression", job.compression || "none");
+  setSeg("backup-type", job.backup_type || "full");
   updateTargetField();
   $("type").value = job.schedule.type;
   if (job.schedule.time) $("time").value = job.schedule.time;
@@ -755,11 +851,6 @@ form.addEventListener("submit", (e) => {
 });
 
 $("list").addEventListener("click", (e) => {
-  const restoreBtn = e.target.closest(".restore-btn");
-  if (restoreBtn) {
-    openRestore(Number(restoreBtn.dataset.i));
-    return;
-  }
   const editBtn = e.target.closest(".edit");
   if (editBtn) {
     openForm(true, Number(editBtn.dataset.i));

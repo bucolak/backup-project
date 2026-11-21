@@ -1,4 +1,5 @@
 import hashlib
+import importlib
 import json
 import logging
 import os
@@ -16,6 +17,7 @@ import urllib.request
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
+from types import SimpleNamespace
 from zipfile import ZIP_DEFLATED, ZipFile
 
 import win32event
@@ -24,10 +26,11 @@ import win32serviceutil
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
-PCLOUD_TOKEN_PATH = os.path.join(BASE_DIR, "pcloud_token.json")
+TARGETS_DIR = os.path.join(BASE_DIR, "targets")   # her hedef türü burada bir dosya: local.py, pcloud.py, gdrive.py ...
 API_CA_PATH = os.path.join(BASE_DIR, "api_ca.crt")   # API'nin sertifikasını onaylayan CA (make_cert.py'nin ca.crt'si)
 
-# pcloud_storage.py service.py'nin yanında; servis hangi klasörde çalışırsa çalışsın bulunabilsin
+# targets/ ve hedeflerin kullandığı dosyalar (pcloud_storage.py, drive_storage.py) service.py'nin yanında;
+# servis hangi klasörde çalışırsa çalışsın bulunabilsin
 sys.path.insert(0, BASE_DIR)
 STATE_PATH = os.path.join(BASE_DIR, "state.json")
 STATUS_PATH = os.path.join(BASE_DIR, "status.json")
@@ -191,9 +194,10 @@ log.addHandler(api_log_handler)
 
 DAYS = ["pzt", "sal", "car", "per", "cum", "cmt", "paz"]
 SCHEDULE_TYPES = ["daily", "weekly", "interval"]
-TARGET_TYPES = ["local", "pcloud", "gdrive"]   # hedef türleri; şimdilik "local" ve "pcloud" çalışıyor
 MODES = ["copy", "move"]
 COMPRESSIONS = ["none", "zip"]   # none: dosyalar olduğu gibi; zip: zip olmayan her dosya ayrı ayrı ziplenir   # copy: kaynak kalır; move: dosya hedefte doğrulandıktan sonra kaynaktan silinir
+BACKUP_TYPES = ["full", "incremental"]   # full: her çalışmada bütün dosyalar; incremental: daha önce yedeklenmemiş (yeni/değişmiş) dosyalar
+FOLDER_FORMAT = "%Y-%m-%d_%H-%M-%S"   # her çalışma hedefte bu adla bir klasöre yazılır, örn. 2026-11-23_02-00-00
 TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")   # HH:MM, örn. 03:00
 
 jobs = []            # config'teki geçerli işler
@@ -205,6 +209,8 @@ last_schedules = {}   # (source, target) -> iş son çalıştığında zamanlama
 
 running = {}                      # (source, target) -> {"pending", "failed_paths", "retries_left"}
 retries = {}                      # (source, target) -> {"paths", "at", "left"}: bekleyen yeniden denemeler
+backed_up = {}                    # (source, target) -> {dosya yolu: [boyut, değişme zamanı, tarih klasörü, zip'li mi,
+                                  #   kaynağın SHA-256'sı, hedefteki dosyanın hash'i (türü hedefe göre)]}: başarıyla yedeklenen dosyalar
 active = {}                       # (iş, dosya yolu) -> şu an kopyalanan dosyanın bilgisi
 history = deque(maxlen=DEFAULT_SETTINGS["history_max"])   # biten dosyalar; dolunca en eskisi atılır
 history_dirty = False             # history değişti mi, dosyaya yazılması gerekiyor mu?
@@ -306,13 +312,16 @@ def load_state():
                 last_runs[key] = datetime.fromisoformat(entry["last_run"])
             if entry.get("schedule"):
                 last_schedules[key] = entry["schedule"]
+            if entry.get("files"):
+                backed_up[key] = {path: list(value) for path, value in entry["files"].items()}
 
             retry = entry.get("retry")
             if retry:
                 retries[key] = {
                     "paths": list(retry["paths"]),
                     "at": datetime.fromisoformat(retry["at"]).timestamp(),
-                    "left": int(retry["left"])
+                    "left": int(retry["left"]),
+                    "folder": retry.get("folder")
                 }
         except (TypeError, ValueError, KeyError, AttributeError):
             log.error("Invalid entry in state file skipped: %s", text_key)
@@ -322,16 +331,18 @@ def save_state():
     """Son çalışma zamanlarını ve bekleyen yeniden denemeleri state.json'a yazar."""
     with running_lock:
         data = {}
-        for key in set(last_runs) | set(retries):
+        for key in set(last_runs) | set(retries) | set(backed_up):
             last_run = last_runs.get(key)
             retry = retries.get(key)
             data[state_key(key)] = {
                 "last_run": last_run.isoformat(timespec="seconds") if last_run else None,
                 "schedule": last_schedules.get(key),
+                "files": backed_up.get(key),
                 "retry": {
                     "paths": list(retry["paths"]),
                     "at": datetime.fromtimestamp(retry["at"]).isoformat(timespec="seconds"),
-                    "left": retry["left"]
+                    "left": retry["left"],
+                    "folder": retry.get("folder")
                 } if retry else None
             }
 
@@ -358,10 +369,8 @@ def validate_job(item):
 
     # Hedef türü yazılmamışsa yerel klasör kabul edilir
     target_type = item.get("target_type", "local")
-    if target_type not in TARGET_TYPES:
-        return "invalid target_type: %r (valid: %s)" % (target_type, ", ".join(TARGET_TYPES))
-    if target_type == "gdrive":
-        return "target_type 'gdrive' is not supported yet"
+    if target_type not in available_target_types():
+        return "invalid target_type: %r (available: %s)" % (target_type, ", ".join(available_target_types()))
 
     # İşlem yazılmamışsa kopyalama kabul edilir
     mode = item.get("mode", "copy")
@@ -373,17 +382,15 @@ def validate_job(item):
     if compression not in COMPRESSIONS:
         return "invalid compression: %r (valid: %s)" % (compression, ", ".join(COMPRESSIONS))
 
-    if target_type == "pcloud":
-        # pCloud'daki klasör: "backup-project/linux-vm" gibi
-        parts = [part for part in item["target"].replace("\\", "/").split("/") if part]
-        if not parts or any(part in (".", "..") for part in parts):
-            return "invalid pcloud folder: %r" % item["target"]
-    else:
-        source, target = norm_path(item["source"]), norm_path(item["target"])
-        if source == target:
-            return "source and target cannot be the same folder"
-        if (target + os.sep).startswith(source + os.sep):
-            return "target cannot be inside source (backups would be copied again and again)"
+    # Yedek türü yazılmamışsa tam yedek (full) kabul edilir
+    backup_type = item.get("backup_type", "full")
+    if backup_type not in BACKUP_TYPES:
+        return "invalid backup_type: %r (valid: %s)" % (backup_type, ", ".join(BACKUP_TYPES))
+
+    # Hedefe özel kontroller hedefin kendi dosyasında (targets/<tür>.py içindeki validate)
+    error = target_module(target_type).validate(item, helpers())
+    if error:
+        return error
 
     retry = item.get("retry", {})
     if not isinstance(retry, dict):
@@ -589,29 +596,6 @@ def clear_readonly(path):
         os.chmod(lp(path), mode | stat.S_IWRITE)
 
 
-def probe_target(folder):
-    """Hedefte gerçekten deneme dosyası oluşturur, adını değiştirir ve siler.
-    Servisin çalıştığı hesabın gerçek yazma iznini ölçer; hata varsa OSError fırlatır."""
-    token = secrets.token_hex(4)
-    first = os.path.join(folder, ".bksvc-probe-%s%s" % (token, TEMP_SUFFIX))
-    second = os.path.join(folder, ".bksvc-probe-%s-b%s" % (token, TEMP_SUFFIX))
-    current = None
-    try:
-        with open(lp(first), "wb") as f:
-            f.write(b"x")
-        current = first
-        os.replace(lp(first), lp(second))
-        current = second
-        os.remove(lp(second))
-        current = None
-    finally:
-        if current:
-            try:
-                os.remove(lp(current))
-            except OSError:
-                pass
-
-
 def check_access(job):
     """İş için gereken izinler varsa None, yoksa sorunun açıklamasını döndürür."""
     # Kaynak: klasör var mı, listelenebiliyor mu, içindeki bir dosya okunabiliyor mu
@@ -634,27 +618,8 @@ def check_access(job):
             if getattr(error, "winerror", None) != 32:
                 return "source files cannot be read (%s): %s" % (sample.name, error)
 
-    if job.get("target_type", "local") == "pcloud":
-        # pCloud için yerel hedef klasörü yok; token ve pcloud_storage.py hazır mı ona bakılır
-        if not os.path.exists(PCLOUD_TOKEN_PATH):
-            return "pcloud token file not found: %s" % PCLOUD_TOKEN_PATH
-        try:
-            import pcloud_storage  # noqa: F401
-        except ImportError as error:
-            return "pcloud support is not ready (pcloud_storage.py or requests package missing): %s" % error
-        return None
-
-    # Hedef: klasör oluşturulabiliyor mu, içine yazılabiliyor mu
-    try:
-        os.makedirs(lp(job["target"]), exist_ok=True)
-    except OSError as error:
-        return "target folder cannot be created: %s" % error
-    try:
-        probe_target(job["target"])
-    except OSError as error:
-        return "no write permission on target: %s" % error
-
-    return None
+    # Hedef hazır mı (klasör yazılabilir mi, token var mı ...): hedefin kendi dosyasında
+    return get_target(job).check()
 
 
 def disk_of(folder):
@@ -684,151 +649,109 @@ def release_space(reservation):
             reserved[reservation[0]] -= reservation[1]
 
 
-def copy_one(path, source, target, info, zipped=False):
-    if stopping.is_set():
-        raise InterruptedError("Service is stopping")
-
-    source_info = os.stat(lp(path))
-    relative_path = os.path.relpath(path, source)
-    target_path = os.path.join(target, relative_path)
-    if zipped:
-        target_path += ".zip"   # a.txt -> a.txt.zip
-    info["target"] = target_path
-    info["size"] = source_info.st_size
-    os.makedirs(lp(os.path.dirname(target_path)), exist_ok=True)
-
-    # Önce geçici dosyaya yaz; doğrulanmadan hedefe dokunma
-    # Rastgele kod: aynı dosyaya aynı anda yazan iki kopyalama birbirine karışmasın
-    temp_path = target_path + "." + secrets.token_hex(4) + TEMP_SUFFIX
-
-    reservation = None
+def available_target_types():
+    """targets/ klasöründeki hedef türleri: local.py -> "local", pcloud.py -> "pcloud" ..."""
     try:
-        # Yer yoksa hiç başlama; varsa bu dosyanın boyutu kadar yeri ayır
-        reservation = reserve_space(os.path.dirname(target_path), source_info.st_size)
-
-        if zipped:
-            # Dosyayı geçici zip'e parça parça zipleyerek yaz, kaynağın hash'ini okurken hesapla
-            info["status"] = "zipping"
-            source_hash = zip_one(path, temp_path, info)
-        else:
-            # Dosyayı parça parça kopyala, kaynağın hash'ini kopyalarken hesapla
-            source_hash = hashlib.sha256()
-            info["status"] = "copying"
-            with open(lp(path), "rb") as src, open(lp(temp_path), "wb") as dst:
-                while True:
-                    if stopping.is_set():
-                        raise InterruptedError("Service is stopping")
-
-                    chunk = src.read(CHUNK_SIZE)
-                    if not chunk:
-                        break
-
-                    source_hash.update(chunk)
-                    dst.write(chunk)
-                    info["copied"] += len(chunk)   # status.json'daki ilerleme için
-
-                # Bellekte bekleyen veriyi şimdi diske yazdır (elektrik kesintisine karşı)
-                dst.flush()
-                os.fsync(dst.fileno())
-            source_hash = source_hash.hexdigest()
-
-        # Sadece tarihleri kaynakla aynı yap (salt okunur gibi özellikler kopyalanmaz)
-        os.utime(lp(temp_path), ns=(source_info.st_atime_ns, source_info.st_mtime_ns))
-
-        info["status"] = "verifying"
-        # Doğrulama: geçici dosyayı diskten tekrar oku, hash'ini kaynakla karşılaştır
-        # (zip'te: zip'i açıp içindeki dosyanın hash'ine bakılır)
-        written_hash = zip_content_hash(temp_path) if zipped else calculate_hash(temp_path)
-        if source_hash != written_hash:
-            raise IOError("Verification failed: " + target_path)
-
-        # Kaynak kopyalama sırasında değiştiyse kopya karışık olabilir: hedefe koyma,
-        # hata say; yeniden deneme kuralı dosyayı biraz sonra tekrar kopyalar
-        after = os.stat(lp(path))
-        if (after.st_size, after.st_mtime_ns) != (source_info.st_size, source_info.st_mtime_ns) \
-                or after.st_size != info["copied"]:
-            raise IOError("Source changed during copy, will be retried: " + path)
-
-        # Doğrulandı: hedefteki eski kopya salt okunursa önce bu özelliği kaldır,
-        # sonra geçici dosyayı tek adımda hedefin yerine koy
-        clear_readonly(target_path)
-        os.replace(lp(temp_path), lp(target_path))
-
-    finally:
-        release_space(reservation)
-        # Bir hata olduysa yarım ya da bozuk geçici dosyayı sil
-        if os.path.exists(lp(temp_path)):
-            os.remove(lp(temp_path))
-
-    log.info("%s and verified: %s -> %s", "Zipped" if zipped else "Copied", path, target_path)
+        names = os.listdir(TARGETS_DIR)
+    except OSError:
+        return []
+    return sorted(name[:-3] for name in names if name.endswith(".py") and not name.startswith("_"))
 
 
-def upload_one_pcloud(path, job, info):
-    """Bir dosyayı pcloud_storage.py ile pCloud'a yükler."""
-    if stopping.is_set():
-        raise InterruptedError("Service is stopping")
+def target_module(target_type):
+    """Hedef türünün dosyasını yükler: "pcloud" -> targets/pcloud.py"""
+    return importlib.import_module("targets." + target_type)
 
-    from pcloud_storage import PCloudStorage
 
-    # Hedef "backup-project/linux-vm" ise: ilk klasör kök, kalanı dosyanın göreli yolunun önüne eklenir
-    parts = [part for part in job["target"].replace("\\", "/").split("/") if part]
-    relative_path = os.path.relpath(path, job["source"]).replace(os.sep, "/")
+_helpers = None
+
+
+def helpers():
+    """Hedef dosyalarının kullandığı ortak yardımcılar (hedef dosyaları servisin geri kalanını bilmez)."""
+    global _helpers
+    if _helpers is None:
+        _helpers = SimpleNamespace(
+            BASE_DIR=BASE_DIR, CHUNK_SIZE=CHUNK_SIZE, TEMP_SUFFIX=TEMP_SUFFIX, stopping=stopping,
+            lp=lp, norm_path=norm_path, calculate_hash=calculate_hash, clear_readonly=clear_readonly,
+            reserve_space=reserve_space, release_space=release_space, list_files=list_files)
+    return _helpers
+
+
+def get_target(job):
+    """İşin hedefi: config'teki target_type'a göre targets/ klasöründeki dosyadan."""
+    return target_module(job.get("target_type", "local")).Target(job, helpers())
+
+
+def backup_rel_path(job, path, folder, zipped):
+    """Dosyanın hedefin içindeki yolu: "<tarih klasörü>/alt/a.txt" (zip'li saklandıysa a.txt.zip)."""
+    rel = folder + "/" + os.path.relpath(path, job["source"]).replace(os.sep, "/")
+    return rel + ".zip" if zipped else rel
+
+
+def already_backed_up(job, key, path):
+    """Incremental: bu dosyanın tam bu hali (aynı boyut, aynı değişme zamanı) daha önce yedeklendi mi?
+    Yedeklendiyse kaydını [boyut, zaman, klasör, zip'li mi, kaynak SHA-256, hedefteki hash], yedeklenmediyse None döndürür."""
+    record = backed_up.get(key, {}).get(path)
+    if not record or len(record) < 6 or not record[4] or not record[5]:
+        return None   # kayıt yok (ya da bu sürümden önceki eski biçimde)
+    try:
+        source_info = os.stat(lp(path))
+    except OSError:
+        return None   # dosya bu arada silinmiş: kopyalamaya çalışılınca hata olarak görünür
+    if record[:2] != [source_info.st_size, source_info.st_mtime_ns]:
+        return None   # dosya o yedekten sonra değişmiş
+    # Hedefte o kopya hâlâ duruyor mu? (elle silindiyse tekrar yedeklenir)
+    if not get_target(job).exists(backup_rel_path(job, path, record[2], record[3])):
+        return None
+    return record
+
+
+def verify_backup(job, target, path, record):
+    """Taşı + incremental: kaynağı kopyalamadan silmeden önce iki kontrol:
+    1) hedefteki kopya bizim koyduğumuz dosya mı (hash'i kayıttakiyle aynı mı)
+    2) kaynak, o zaman yedeklenen içerikle birebir aynı mı"""
+    folder, zipped, source_sha256, stored_hash = record[2:6]
+    if not target.verify(backup_rel_path(job, path, folder, zipped), stored_hash):
+        return False
+    return calculate_hash(path) == source_sha256
+
+
+def save_file(job, target, path, folder, info, source_info):
+    """Bir dosyayı (gerekirse zip'leyerek) hedefe koyar; bütün hedef türleri için aynı akış.
+    Kayıt için (zip'li mi, kaynağın SHA-256'sı, hedefteki dosyanın hash'i) döndürür."""
     zipped = needs_zip(job, path)
-    if zipped:
-        relative_path += ".zip"   # a.txt -> a.txt.zip
-    remote_path = "/".join(parts[1:] + [relative_path])
-
-    info["target"] = "pcloud:" + "/".join(parts + [relative_path])
-    info["size"] = os.path.getsize(path)
+    rel = backup_rel_path(job, path, folder, zipped)
+    info["target"] = target.display(rel)
 
     upload_path = path
     temp_zip = None
     try:
         if zipped:
-            # Önce bu bilgisayarın geçici klasöründe zip'le ve zip'i doğrula, sonra zip'i yükle
+            # Önce bu bilgisayarın geçici klasöründe zip'le ve zip'i doğrula; hedefe zip konur
             temp_zip = os.path.join(tempfile.gettempdir(), "bksvc-" + secrets.token_hex(4) + ".zip" + TEMP_SUFFIX)
             info["status"] = "zipping"
-            source_hash = zip_one(path, temp_zip, info)
-            if source_hash != zip_content_hash(temp_zip):
+            source_sha256 = zip_one(path, temp_zip, info)
+            if source_sha256 != zip_content_hash(temp_zip):
                 raise IOError("Zip verification failed: " + path)
+            os.utime(lp(temp_zip), ns=(source_info.st_atime_ns, source_info.st_mtime_ns))   # zip'in tarihi = kaynağın tarihi
             upload_path = temp_zip
 
-        info["status"] = "uploading"
-
-        # Yüklemeden önce yüklenecek dosyanın parmak izlerini hesapla (pCloud bölgesine göre SHA-256 ya da SHA-1 veriyor)
-        sha256 = hashlib.sha256()
-        sha1 = hashlib.sha1()
-        with open(lp(upload_path), "rb") as f:
-            while True:
-                chunk = f.read(CHUNK_SIZE)
-                if not chunk:
-                    break
-                sha256.update(chunk)
-                sha1.update(chunk)
-
-        def on_progress(done, total):
-            # pcloud_storage yüklemenin ilerlemesini bildirir; dosya boyutuna oranlanır
-            info["copied"] = info["size"] * done // total if total else 0
-
-        storage = PCloudStorage(parts[0], token_file=PCLOUD_TOKEN_PATH)
-        result = storage.save(upload_path, remote_path, progress=on_progress)
-        info["copied"] = info["size"]
+        info["copied"] = 0
+        file_sha256, stored_hash = target.save(upload_path, rel, info)
+        if not zipped:
+            source_sha256 = file_sha256
     finally:
         # Geçici zip'i her durumda sil
         if temp_zip and os.path.exists(lp(temp_zip)):
             os.remove(lp(temp_zip))
 
-    # Doğrulama: pCloud'un aldığı dosya için hesapladığı hash, bizimkiyle aynı mı?
-    info["status"] = "verifying"
-    checksums = result["checksums"][0]
-    if "sha256" in checksums:
-        same = checksums["sha256"].lower() == sha256.hexdigest()
-    else:
-        same = checksums["sha1"].lower() == sha1.hexdigest()
-    if not same:
-        raise IOError("pCloud verification failed: " + info["target"])
+    # Kaynak yedekleme sırasında değiştiyse kopya karışık olabilir: hata say, yeniden deneme kuralı tekrar dener
+    after = os.stat(lp(path))
+    if (after.st_size, after.st_mtime_ns) != (source_info.st_size, source_info.st_mtime_ns):
+        raise IOError("Source changed during backup, will be retried: " + path)
 
-    log.info("Uploaded and verified on pCloud: %s -> %s", path, info["target"])
+    log.info("%s and verified: %s -> %s", "Zipped" if zipped else "Saved", path, info["target"])
+    return zipped, source_sha256, stored_hash
 
 
 def list_files(source):
@@ -865,16 +788,19 @@ def is_due(job, key, now):
     return False
 
 
-def start_job(pool, job, key, paths, retries_left):
+def start_job(pool, job, key, paths, retries_left, folder, verify=None):
+    """folder: bu çalışmanın tarih klasörü. verify: Taşı + incremental'da önce doğrulanacak dosyalar {dosya: kaydı}."""
+    verify = verify or {}
     with running_lock:
-        running[key] = {"pending": len(paths), "total": len(paths), "failed_paths": [], "retries_left": retries_left}
+        running[key] = {"pending": len(paths), "total": len(paths), "failed_paths": [], "retries_left": retries_left,
+                        "folder": folder}
 
     # Her dosya ayrı bir görev: boştaki thread hangisiyse o alır
     for path in paths:
-        pool.submit(run_file, path, job, key)
+        pool.submit(run_file, path, job, key, folder, verify.get(path))
 
 
-def run_file(path, job, key):
+def run_file(path, job, key, folder, verify_record=None):
     global history_dirty
     akey = (key, path)
     info = {
@@ -887,10 +813,24 @@ def run_file(path, job, key):
 
     failed = False
     try:
-        if job.get("target_type", "local") == "pcloud":
-            upload_one_pcloud(path, job, info)
+        source_info = os.stat(lp(path))   # incremental kaydı için: kopyalamadan önceki boyut ve değişme zamanı
+        info["size"] = source_info.st_size
+        target = get_target(job)
+        if verify_record and verify_backup(job, target, path, verify_record):
+            # Taşı + incremental: önceki bir yedekte birebir aynısı var, kopyalamaya gerek yok; aşağıda kaynaktan silinir
+            saved_folder, zipped, source_sha256, stored_hash = verify_record[2:6]
+            info["copied"] = source_info.st_size
+            info["target"] = target.display(backup_rel_path(job, path, saved_folder, zipped))
+            log.info("Already backed up in %s, verified (not copied): %s", saved_folder, path)
         else:
-            copy_one(path, job["source"], job["target"], info, needs_zip(job, path))
+            saved_folder = folder
+            zipped, source_sha256, stored_hash = save_file(job, target, path, folder, info, source_info)
+
+        # Dosyayı "yedeklendi" diye kaydet (boyut + değişme zamanı + tarih klasörü). Incremental bu kayda bakar;
+        # taşınan dosya kaynağa geri konursa da tanınır
+        with running_lock:
+            backed_up.setdefault(key, {})[path] = [source_info.st_size, source_info.st_mtime_ns, saved_folder,
+                                                   zipped, source_sha256, stored_hash]
 
         # Taşıma: dosya hedefte doğrulandı, şimdi kaynaktan sil
         if job.get("mode", "copy") == "move":
@@ -939,7 +879,8 @@ def run_file(path, job, key):
                     retry = {
                         "paths": state["failed_paths"],
                         "at": time.time() + get_retry(job)["delay"],
-                        "left": state["retries_left"] - 1
+                        "left": state["retries_left"] - 1,
+                        "folder": state["folder"]   # hatalı dosyalar aynı tarih klasörüne tekrar denenir
                     }
                     retries[key] = retry
                 else:
@@ -1044,7 +985,7 @@ def api_post(path, data, content_type="application/json"):
 
 
 def handle_restores():
-    """API'deki bekleyen geri yükleme isteklerini (yerel hedefli işler) yerine getirir."""
+    """API'deki bekleyen geri yükleme isteklerini yerine getirir (bütün hedef türleri için aynı)."""
     client_id = settings["client_id"]
     if not client_id:
         return
@@ -1058,24 +999,23 @@ def handle_restores():
     for r in requests_:
         base = "/restore/requests/%d" % r["id"]
         try:
+            # Hedef türü ne olursa olsun aynı akış: listeyi ya da dosyayı hedeften al, API'ye gönder
+            target = get_target({"target": r["target"], "target_type": r.get("target_type") or "local"})
             if r["kind"] == "list":
-                # Hedef klasördeki dosyalar, klasöre göre yollarıyla
-                files = []
-                for path in list_files(r["target"]):
-                    info = os.stat(lp(path))
-                    files.append({
-                        "path": os.path.relpath(path, r["target"]).replace(os.sep, "/"),
-                        "size": info.st_size,
-                        "modified": datetime.fromtimestamp(info.st_mtime).isoformat(timespec="seconds")
-                    })
+                files = target.list()
                 api_post(base + "/list", json.dumps(files, ensure_ascii=False).encode("utf-8"))
                 log.info("Restore: file list sent: %s (%d files)", r["target"], len(files))
             else:
-                # İstenen dosyanın içeriğini API'ye gönder
-                path = os.path.join(r["target"], r["path"].replace("/", os.sep))
-                with open(lp(path), "rb") as f:
-                    api_post(base + "/file", f, "application/octet-stream")
-                log.info("Restore: file sent: %s", path)
+                # Dosyayı geçici dosyaya al, API'ye gönder, geçici dosyayı sil
+                temp = os.path.join(tempfile.gettempdir(), "bksvc-restore-" + secrets.token_hex(4) + TEMP_SUFFIX)
+                try:
+                    target.download(r["path"], temp)
+                    with open(lp(temp), "rb") as f:
+                        api_post(base + "/file", f, "application/octet-stream")
+                finally:
+                    if os.path.exists(lp(temp)):
+                        os.remove(lp(temp))
+                log.info("Restore: file sent: %s", target.display(r["path"]))
         except Exception as error:
             log.exception("Restore request %d failed", r["id"])
             try:
@@ -1219,12 +1159,33 @@ class BackupService(win32serviceutil.ServiceFramework):
                                 last_runs[key] = now
                             last_schedules[key] = job["schedule"]
                             save_state()
-                            log.info("Job started: %s -> %s", job["source"], job["target"])
+                            log.info("Job started (%s): %s -> %s", job.get("backup_type", "full"),
+                                     job["source"], job["target"])
+                            folder = now.strftime(FOLDER_FORMAT)   # bu çalışmanın hedefteki tarih klasörü
                             paths = list_files(job["source"])
+                            verify = {}
+                            if job.get("backup_type", "full") == "incremental":
+                                # Her dosya için tek soru: tam bu hali daha önce yedeklendi mi? (kayıttan; yedeklendiyse hangi klasörde)
+                                done = {}
+                                for p in paths:
+                                    record = already_backed_up(job, key, p)
+                                    if record:
+                                        done[p] = record
+                                if job.get("mode", "copy") == "move":
+                                    # Taşı: yedeklenmiş olanlar kopyalanmaz; o klasördeki kopya doğrulanıp kaynaktan silinir
+                                    verify = done
+                                    log.info("Incremental: %d of %d file(s) already backed up (will be verified, not copied)",
+                                             len(done), len(paths))
+                                else:
+                                    # Kopyala: yedeklenmiş olanlar atlanır
+                                    log.info("Incremental: %d of %d file(s) are new or changed", len(paths) - len(done), len(paths))
+                                    paths = [p for p in paths if p not in done]
                             if not paths:
-                                log.info("Job finished: %s -> %s (no files)", job["source"], job["target"])
+                                log.info("Job finished: %s -> %s (no files to copy, no folder created)", job["source"], job["target"])
                                 continue
-                            start_job(pool, job, key, paths, get_retry(job)["count"])
+                            if len(paths) > len(verify):   # klasör sadece en az bir dosya kopyalanacaksa oluşur
+                                log.info("Backup folder for this run: %s", folder)
+                            start_job(pool, job, key, paths, get_retry(job)["count"], folder, verify)
 
                         else:
                             # Sadece hatalı dosyaları tekrar kopyala. Kayıt, deneme bitene kadar
@@ -1234,7 +1195,8 @@ class BackupService(win32serviceutil.ServiceFramework):
                                 retry["started"] = True
                             log.info("Retrying %d file(s): %s -> %s",
                                      len(retry["paths"]), job["source"], job["target"])
-                            start_job(pool, job, key, retry["paths"], retry["left"])
+                            start_job(pool, job, key, retry["paths"], retry["left"],
+                                      retry.get("folder") or now.strftime(FOLDER_FORMAT))
 
                     except Exception:
                         log.exception("Job failed: %s -> %s", job["source"], job["target"])

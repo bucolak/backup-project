@@ -4,29 +4,18 @@ import json
 import os
 import secrets
 import sqlite3
-import ssl
-import urllib.parse
-import urllib.request
 from datetime import datetime, timedelta
-from email.utils import parsedate_to_datetime
 from typing import Optional
 
-import certifi
 from fastapi import Body, Cookie, Depends, FastAPI, HTTPException, Request, Response
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
 
 LOG_RETENTION_DAYS = 30   # API'de kaç günlük log tutulacak
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "backup.db")
 WEB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "web", "yedekleme-isleri.html")
-PCLOUD_TOKEN_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pcloud_token.json")
 RESTORE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "restore_tmp")   # servisten gelen dosyalar, indirilene kadar
-CHUNK_SIZE = 1024 * 1024   # 1 MB
 LOGIN_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "login.json")   # set_password.py üretir
-
-# pCloud'a HTTPS ile bağlanırken sertifikayı certifi'nin listesiyle doğrula
-# (Windows'un sertifika deposunda pCloud'un kök sertifikası olmayabiliyor)
-SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
 
 # CORS yok: panel API'nin kendi adresinden açılıyor, başka sitelerin sayfaları API'nin cevaplarını okuyamaz
 app = FastAPI()
@@ -97,7 +86,8 @@ JOB_COLUMNS = {
     "target": "TEXT",
     "schedule": "TEXT",
     "mode": "TEXT DEFAULT 'copy'",
-    "compression": "TEXT DEFAULT 'none'"
+    "compression": "TEXT DEFAULT 'none'",
+    "backup_type": "TEXT DEFAULT 'full'"
 }
 
 
@@ -112,7 +102,8 @@ def connect():
             target TEXT,
             schedule TEXT,
             mode TEXT DEFAULT 'copy',
-            compression TEXT DEFAULT 'none'
+            compression TEXT DEFAULT 'none',
+            backup_type TEXT DEFAULT 'full'
         )
     """)
 
@@ -173,18 +164,19 @@ def get_jobs(client_id: Optional[str] = None, session: Optional[str] = Cookie(No
     if client_id is None:
         # Arayüz: bütün makinelerin işleri
         rows = connection.execute(
-            "SELECT client_id, source, target_type, target, schedule, mode, compression FROM jobs ORDER BY id"
+            "SELECT client_id, source, target_type, target, schedule, mode, compression, backup_type FROM jobs ORDER BY id"
         ).fetchall()
     else:
         # Servis: sadece kendi makinesinin işleri
         rows = connection.execute(
-            "SELECT client_id, source, target_type, target, schedule, mode, compression FROM jobs WHERE client_id = ? ORDER BY id",
+            "SELECT client_id, source, target_type, target, schedule, mode, compression, backup_type FROM jobs WHERE client_id = ? ORDER BY id",
             (client_id,)
         ).fetchall()
     connection.close()
     return [{"client_id": client_id, "source": source, "target_type": target_type,
-             "target": target, "schedule": json.loads(schedule), "mode": mode, "compression": compression}
-            for client_id, source, target_type, target, schedule, mode, compression in rows]
+             "target": target, "schedule": json.loads(schedule), "mode": mode, "compression": compression,
+             "backup_type": backup_type}
+            for client_id, source, target_type, target, schedule, mode, compression, backup_type in rows]
 
 
 @app.put("/jobs", dependencies=[Depends(require_login)])
@@ -194,9 +186,10 @@ def save_jobs(jobs: list = Body()):
         connection.execute("DELETE FROM jobs")
         for job in jobs:
             connection.execute(
-                "INSERT INTO jobs (client_id, source, target_type, target, schedule, mode, compression) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO jobs (client_id, source, target_type, target, schedule, mode, compression, backup_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (job["client_id"], job["source"], job.get("target_type", "local"), job["target"],
-                 json.dumps(job["schedule"]), job.get("mode", "copy"), job.get("compression", "none"))
+                 json.dumps(job["schedule"]), job.get("mode", "copy"), job.get("compression", "none"),
+                 job.get("backup_type", "full"))
             )
     connection.close()
     return {"saved": len(jobs)}
@@ -265,45 +258,8 @@ def get_logs(client_id: Optional[str] = None, level: Optional[str] = None, limit
 
 
 # ---------------- Geri yükleme ----------------
-# pCloud hedefli işler: API token'la pCloud'a kendisi bağlanır (servis gerekmez).
-# Yerel hedefli işler: istek tabloya yazılır, servis 5 saniyede bir sorar, listeyi/dosyayı API'ye gönderir.
-
-def pcloud_call(method, params):
-    # pCloud API'sini çağırır; token API klasöründeki pcloud_token.json'dan okunur
-    with open(PCLOUD_TOKEN_PATH, "r", encoding="utf-8") as f:
-        token = json.load(f)
-    url = token["api"] + "/" + method + "?" + urllib.parse.urlencode(params)
-    request = urllib.request.Request(url, headers={"Authorization": "Bearer " + token["access_token"]})
-    with urllib.request.urlopen(request, timeout=30, context=SSL_CONTEXT) as response:
-        data = json.loads(response.read().decode("utf-8"))
-    if data["result"] != 0:
-        raise RuntimeError("pCloud error: " + str(data.get("error")))
-    return data
-
-
-def pcloud_folder(target):
-    # İşin hedefi "backup-project/linux-vm" ise pCloud'daki klasör "/backup-project/linux-vm"
-    return "/" + "/".join(part for part in target.replace("\\", "/").split("/") if part)
-
-
-def pcloud_list(target):
-    # Klasörü alt klasörleriyle birlikte listele; dosyaların klasöre göre yollarını döndür
-    data = pcloud_call("listfolder", {"path": pcloud_folder(target), "recursive": 1})
-    files = []
-
-    def walk(folder, prefix):
-        for item in folder.get("contents", []):
-            if item["isfolder"]:
-                walk(item, prefix + item["name"] + "/")
-            else:
-                # pCloud tarihi "Tue, 17 Nov 2026 08:00:00 +0000" biçiminde; yerel listeyle aynı olsun diye çevrilir
-                modified = parsedate_to_datetime(item["modified"]).astimezone().replace(tzinfo=None)
-                files.append({"path": prefix + item["name"], "size": item["size"],
-                              "modified": modified.isoformat(timespec="seconds")})
-
-    walk(data["metadata"], "")
-    return files
-
+# Hedef türü ne olursa olsun aynı akış: istek tabloya yazılır, servis 5 saniyede bir sorar,
+# listeyi/dosyayı hedeften alıp API'ye gönderir. API hedef türlerini bilmez, bulut token'ı tutmaz.
 
 def find_job(client_id, source, target):
     connection = connect()
@@ -318,16 +274,9 @@ def find_job(client_id, source, target):
 
 
 def create_restore(job, kind, path=None):
-    # İsteği kaydeder; pCloud'da liste hemen alınır, dosya ise indirme anında pCloud'dan aktarılır
+    # İsteği kaydeder; servis alıp yerine getirene kadar "pending" kalır
     target_type = find_job(job["client_id"], job["source"], job["target"])
     status, files, error = "pending", None, None
-    if target_type == "pcloud":
-        status = "ready"
-        if kind == "list":
-            try:
-                files = json.dumps(pcloud_list(job["target"]))
-            except Exception as e:
-                status, error = "error", str(e)
 
     connection = connect()
     with connection:
@@ -392,25 +341,7 @@ def restore_download(request_id: int):
         raise HTTPException(409, "file is not ready")
     name = r["path"].split("/")[-1]
 
-    if r["target_type"] == "pcloud":
-        # pCloud'dan okurken aynı anda tarayıcıya aktar; API'nin diskine yazılmaz
-        link = pcloud_call("getfilelink", {"path": pcloud_folder(r["target"]) + "/" + r["path"]})
-        response = urllib.request.urlopen("https://" + link["hosts"][0] + link["path"], timeout=30,
-                                          context=SSL_CONTEXT)
-
-        def stream():
-            with response:
-                while True:
-                    chunk = response.read(CHUNK_SIZE)
-                    if not chunk:
-                        break
-                    yield chunk
-
-        return StreamingResponse(stream(), media_type="application/octet-stream", headers={
-            "Content-Disposition": "attachment; filename*=UTF-8''" + urllib.parse.quote(name)
-        })
-
-    # Yerel hedef: servisin gönderdiği dosyayı ver, gönderim bitince sil
+    # Servisin gönderdiği dosyayı ver, gönderim bitince sil
     path = os.path.join(RESTORE_DIR, str(request_id))
     set_restore(request_id, "downloaded")
     return FileResponse(path, filename=name, background=BackgroundTask(os.remove, path))
@@ -419,14 +350,15 @@ def restore_download(request_id: int):
 # Servis
 @app.get("/restore/pending")
 def restore_pending(client_id: str):
-    # Servis: bu makinenin bekleyen (yerel hedefli) istekleri
+    # Servis: bu makinenin bekleyen istekleri
     connection = connect()
     rows = connection.execute(
-        "SELECT id, kind, target, path FROM restore_requests WHERE client_id = ? AND status = 'pending' ORDER BY id",
+        "SELECT id, kind, target, target_type, path FROM restore_requests WHERE client_id = ? AND status = 'pending' ORDER BY id",
         (client_id,)
     ).fetchall()
     connection.close()
-    return [{"id": id, "kind": kind, "target": target, "path": path} for id, kind, target, path in rows]
+    return [{"id": id, "kind": kind, "target": target, "target_type": target_type, "path": path}
+            for id, kind, target, target_type, path in rows]
 
 
 @app.post("/restore/requests/{request_id}/list")
