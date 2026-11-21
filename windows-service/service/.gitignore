@@ -11,3 +11,6 @@ pcloud_token.json
 pcloud_credentials.json
 token.json
 credentials.json
+
+# API'nin CA sertifikası: her kurulumda make_cert.py ile ayrı üretilir, elle kopyalanır
+api_ca.crt

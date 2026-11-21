@@ -8,3 +8,9 @@ pcloud_token.json
 
 # Geri yüklemede servisten gelen, henüz indirilmemiş dosyalar
 restore_tmp/
+
+# HTTPS sertifikaları ve gizli anahtarları (make_cert.py üretir): asla Git'e girmesin
+cert/
+
+# Panel girişinin kullanıcı adı ve şifre hash'i (set_password.py üretir)
+login.json

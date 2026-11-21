@@ -1,3 +1,4 @@
 fastapi
 uvicorn
 certifi
+cryptography   # sadece make_cert.py için

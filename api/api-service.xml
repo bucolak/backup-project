@@ -7,8 +7,9 @@
   <description>Backup project API and web panel</description>
 
   <!-- venv'deki Python ile uvicorn'u başlat (terminalde yazdığımız komutun aynısı) -->
+  <!-- HTTPS: uvicorn API'nin gizli anahtarı ve kimlik kartıyla (make_cert.py üretir) çalışır -->
   <executable>C:\Users\W10\Desktop\backup-project\venv\Scripts\python.exe</executable>
-  <arguments>-m uvicorn api:app --host 0.0.0.0 --port 8001</arguments>
+  <arguments>-m uvicorn api:app --host 0.0.0.0 --port 8001 --ssl-keyfile cert\server.key --ssl-certfile cert\server.crt</arguments>
   <workingdirectory>C:\Users\W10\Desktop\backup-project\api</workingdirectory>
 
   <!-- Bilgisayar açılınca kendiliğinden başla -->

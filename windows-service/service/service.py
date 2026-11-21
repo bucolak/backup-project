@@ -5,6 +5,7 @@ import os
 import re
 import secrets
 import shutil
+import ssl
 import stat
 import sys
 import tempfile
@@ -24,6 +25,7 @@ import win32serviceutil
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
 PCLOUD_TOKEN_PATH = os.path.join(BASE_DIR, "pcloud_token.json")
+API_CA_PATH = os.path.join(BASE_DIR, "api_ca.crt")   # API'nin sertifikasını onaylayan CA (make_cert.py'nin ca.crt'si)
 
 # pcloud_storage.py service.py'nin yanında; servis hangi klasörde çalışırsa çalışsın bulunabilsin
 sys.path.insert(0, BASE_DIR)
@@ -35,10 +37,12 @@ WORKERS = 4
 CHUNK_SIZE = 1024 * 1024   # 1 MB
 DEFAULT_RETRY = {"count": 3, "delay": 60}   # 3 kez, 60 saniye arayla
 ACCESS_RECHECK = 60   # kaynak/hedef izin sorunu varsa kaç saniyede bir tekrar bakılacak
-API_URL = "http://127.0.0.1:8001"   # API aynı bilgisayarda çalışıyor
+API_URL = "https://127.0.0.1:8001"   # API aynı bilgisayarda çalışıyor
 API_CHECK_SECONDS = 30                    # API'ye kaç saniyede bir sorulacak
 STATUS_REPORT_SECONDS = 5                 # durum (sonuçlar ve ilerleme) ve yeni loglar API'ye kaç saniyede bir gönderilecek
 PENDING_LOGS_MAX = 5000                   # API'ye gönderilmeyi bekleyen en fazla log satırı
+# API'ye HTTPS ile bağlanırken sadece bizim CA'nın onayladığı sertifikaya güven
+API_SSL = ssl.create_default_context(cafile=API_CA_PATH)
 LOG_NAME_RE = re.compile(r"^log_(\d{4}-\d{2}-\d{2})\.jsonl$")
 
 # config.json'daki "settings" bölümünde yazılmayan ayarlar için varsayılanlar
@@ -231,7 +235,7 @@ def sync_from_api():
     # Sadece bu makinenin işlerini iste: /jobs?client_id=muhasebe-pc
     url = API_URL + "/jobs?client_id=" + urllib.parse.quote(client_id)
     try:
-        with urllib.request.urlopen(url, timeout=5) as response:
+        with urllib.request.urlopen(url, timeout=5, context=API_SSL) as response:
             api_jobs = json.loads(response.read().decode("utf-8"))
     except (OSError, ValueError) as error:
         if not api_error:
@@ -1021,7 +1025,7 @@ def report_logs():
         method="POST"
     )
     try:
-        with urllib.request.urlopen(request, timeout=3):
+        with urllib.request.urlopen(request, timeout=3, context=API_SSL):
             pass
     except (OSError, ValueError):
         return   # gönderilemedi: satırlar kuyrukta kalır, bir sonraki seferde tekrar denenir
@@ -1035,7 +1039,7 @@ def api_post(path, data, content_type="application/json"):
                                      headers={"Content-Type": content_type})
     if hasattr(data, "read"):
         request.add_header("Content-Length", str(os.fstat(data.fileno()).st_size))
-    with urllib.request.urlopen(request, timeout=60):
+    with urllib.request.urlopen(request, timeout=60, context=API_SSL):
         pass
 
 
@@ -1046,7 +1050,7 @@ def handle_restores():
         return
     try:
         url = API_URL + "/restore/pending?client_id=" + urllib.parse.quote(client_id)
-        with urllib.request.urlopen(url, timeout=5) as response:
+        with urllib.request.urlopen(url, timeout=5, context=API_SSL) as response:
             requests_ = json.loads(response.read().decode("utf-8"))
     except (OSError, ValueError):
         return   # API'ye ulaşılamadı: bir sonraki turda tekrar sorulur
@@ -1099,7 +1103,7 @@ def report_status(data):
         method="POST"
     )
     try:
-        with urllib.request.urlopen(request, timeout=3):
+        with urllib.request.urlopen(request, timeout=3, context=API_SSL):
             pass
     except (OSError, ValueError):
         pass   # API'ye ulaşılamıyorsa bu zaten sync_from_api() tarafından loglanıyor

@@ -1,5 +1,8 @@
+import hashlib
+import hmac
 import json
 import os
+import secrets
 import sqlite3
 import ssl
 import urllib.parse
@@ -9,8 +12,7 @@ from email.utils import parsedate_to_datetime
 from typing import Optional
 
 import certifi
-from fastapi import Body, FastAPI, HTTPException, Request
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import Body, Cookie, Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, StreamingResponse
 from starlette.background import BackgroundTask
 
@@ -20,26 +22,70 @@ WEB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "web",
 PCLOUD_TOKEN_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pcloud_token.json")
 RESTORE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "restore_tmp")   # servisten gelen dosyalar, indirilene kadar
 CHUNK_SIZE = 1024 * 1024   # 1 MB
+LOGIN_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "login.json")   # set_password.py üretir
 
 # pCloud'a HTTPS ile bağlanırken sertifikayı certifi'nin listesiyle doğrula
 # (Windows'un sertifika deposunda pCloud'un kök sertifikası olmayabiliyor)
 SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
 
+# CORS yok: panel API'nin kendi adresinden açılıyor, başka sitelerin sayfaları API'nin cevaplarını okuyamaz
 app = FastAPI()
-
-# Web arayüzü başka bir adresten (ya da dosyadan) açıldığı için tarayıcının isteğe izin vermesi gerekiyor
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"]
-)
 
 
 @app.get("/")
 def web():
     # Tarayıcıda API'nin adresi açılınca arayüzü gönder
     return FileResponse(WEB_PATH)
+
+
+# ---------------- Giriş (login) ----------------
+# Giriş yapılınca rastgele bir oturum anahtarı üretilir ve tarayıcıya çerez olarak verilir.
+# Oturumlar hafızada tutulur: API yeniden başlarsa tekrar giriş yapmak gerekir.
+SESSIONS = set()
+
+
+def require_login(session: Optional[str] = Cookie(None)):
+    # Panelin kullandığı adresler: geçerli oturum çerezi yoksa 401
+    if session not in SESSIONS:
+        raise HTTPException(401, "login required")
+
+
+def check_password(username, password):
+    # login.json'daki hash ile karşılaştır (şifrenin kendisi hiçbir yerde saklanmaz)
+    with open(LOGIN_PATH, "r", encoding="utf-8") as f:
+        login = json.load(f)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), bytes.fromhex(login["salt"]),
+                                 login["iterations"]).hex()
+    same_user = hmac.compare_digest(username.encode("utf-8"), login["username"].encode("utf-8"))
+    same_password = hmac.compare_digest(digest, login["hash"])
+    return same_user and same_password
+
+
+@app.post("/login")
+def login(response: Response, body: dict = Body()):
+    if not os.path.exists(LOGIN_PATH):
+        raise HTTPException(503, "login.json not found: run set_password.py on the API computer")
+    if not check_password(body.get("username", ""), body.get("password", "")):
+        raise HTTPException(401, "wrong username or password")
+    token = secrets.token_urlsafe(32)
+    SESSIONS.add(token)
+    # httponly: sayfadaki JavaScript çerezi okuyamaz; secure: sadece HTTPS'te gönderilir;
+    # samesite=strict: başka bir siteden gelen isteklere çerez eklenmez
+    response.set_cookie("session", token, httponly=True, secure=True, samesite="strict")
+    return {"ok": True}
+
+
+@app.post("/logout")
+def logout(response: Response, session: Optional[str] = Cookie(None)):
+    SESSIONS.discard(session)
+    response.delete_cookie("session", httponly=True, secure=True, samesite="strict")
+    return {"ok": True}
+
+
+@app.get("/me")
+def me(session: Optional[str] = Cookie(None)):
+    # Panel açılınca: giriş yapılmış mı?
+    return {"logged_in": session in SESSIONS}
 
 
 # jobs tablosunda olması gereken sütunlar. Yeni sütun eklenince buraya da yazılır;
@@ -120,7 +166,9 @@ def connect():
 
 
 @app.get("/jobs")
-def get_jobs(client_id: Optional[str] = None):
+def get_jobs(client_id: Optional[str] = None, session: Optional[str] = Cookie(None)):
+    if client_id is None:
+        require_login(session)   # bütün işler: sadece panel (giriş yapılmış)
     connection = connect()
     if client_id is None:
         # Arayüz: bütün makinelerin işleri
@@ -139,7 +187,7 @@ def get_jobs(client_id: Optional[str] = None):
             for client_id, source, target_type, target, schedule, mode, compression in rows]
 
 
-@app.put("/jobs")
+@app.put("/jobs", dependencies=[Depends(require_login)])
 def save_jobs(jobs: list = Body()):
     connection = connect()
     with connection:   # hepsi birlikte kaydedilir ya da hiçbiri
@@ -167,7 +215,7 @@ def save_status(client_id: str, status: dict = Body()):
     return {"saved": True}
 
 
-@app.get("/status")
+@app.get("/status", dependencies=[Depends(require_login)])
 def get_status():
     # Panel: bütün makinelerin son durumu
     connection = connect()
@@ -195,7 +243,7 @@ def save_logs(client_id: str, entries: list = Body()):
     return {"saved": len(entries)}
 
 
-@app.get("/logs")
+@app.get("/logs", dependencies=[Depends(require_login)])
 def get_logs(client_id: Optional[str] = None, level: Optional[str] = None, limit: int = 500):
     # Panel: en yeni log satırları; makineye ve seviyeye göre filtrelenebilir
     query = "SELECT client_id, time, level, message, error FROM logs WHERE 1 = 1"
@@ -319,25 +367,25 @@ def set_restore(request_id, status, files=None, error=None):
 
 
 # Panel
-@app.post("/restore/list")
+@app.post("/restore/list", dependencies=[Depends(require_login)])
 def restore_list(job: dict = Body()):
     # Body: {"client_id", "source", "target"} -> işin hedefindeki dosyaları listeleme isteği
     return create_restore(job, "list")
 
 
-@app.post("/restore/file")
+@app.post("/restore/file", dependencies=[Depends(require_login)])
 def restore_file(job: dict = Body()):
     # Body: {"client_id", "source", "target", "path"} -> tek bir dosyayı getirme isteği
     return create_restore(job, "file", job["path"])
 
 
-@app.get("/restore/requests/{request_id}")
+@app.get("/restore/requests/{request_id}", dependencies=[Depends(require_login)])
 def restore_status(request_id: int):
     # Panel isteğin durumunu buradan takip eder
     return get_restore(request_id)
 
 
-@app.get("/restore/download/{request_id}")
+@app.get("/restore/download/{request_id}", dependencies=[Depends(require_login)])
 def restore_download(request_id: int):
     r = get_restore(request_id)
     if r["kind"] != "file" or r["status"] != "ready":

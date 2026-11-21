@@ -47,6 +47,10 @@ body {
   padding-block: 24px 48px;
 }
 .wrap { max-width: 760px; margin: 0 auto; display: flex; flex-direction: column; gap: 20px; }
+
+/* Giriş ekranı */
+.login { max-width: 360px; margin: 12vh auto 0; display: flex; flex-direction: column; gap: 14px; padding: 24px; }
+.header-actions { display: flex; align-items: center; gap: 12px; }
 h1, h2 { margin: 0; text-wrap: balance; }
 .mono { font-family: var(--font-mono); font-size: 13px; }
 .muted { color: var(--muted); }
@@ -74,7 +78,7 @@ form h2 { font-size: 16px; font-weight: 600; }
 .field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
 .field label, .field legend { font-size: 13px; font-weight: 500; color: var(--muted); }
 .row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
-input[type="text"], input[type="time"], input[type="number"], select {
+input[type="text"], input[type="password"], input[type="time"], input[type="number"], select {
   font: inherit; color: var(--fg); background: var(--surface); border: 1px solid var(--line);
   border-radius: 6px; padding: 8px 10px; min-height: 40px; width: 100%; min-width: 0;
 }
@@ -177,13 +181,33 @@ pre { margin: 0; padding: 14px 16px; overflow-x: auto; font-family: var(--font-m
 }
 </style>
 
-<div class="wrap">
+<form class="box login" id="login-view" hidden>
+  <div>
+    <h1>Yedekleme Paneli</h1>
+    <p class="hint">Devam etmek için giriş yap.</p>
+  </div>
+  <div class="field">
+    <label for="login-user">Kullanıcı adı</label>
+    <input type="text" id="login-user" autocomplete="username" spellcheck="false">
+  </div>
+  <div class="field">
+    <label for="login-pass">Şifre</label>
+    <input type="password" id="login-pass" autocomplete="current-password">
+  </div>
+  <p class="error" id="login-error" role="alert" hidden></p>
+  <button class="btn primary" type="submit">Giriş yap</button>
+</form>
+
+<div class="wrap" id="app" hidden>
   <header>
     <div>
       <h1>Yedekleme İşleri</h1>
       <p>Kaynak, hedef ve zamanlamayı seç; değişiklikler API'ye kaydedilir.</p>
     </div>
-    <button class="add-btn" id="add-btn" type="button" aria-expanded="false" aria-controls="job-form" aria-label="Yeni yedekleme ekle">+</button>
+    <div class="header-actions">
+      <button class="btn" type="button" id="logout-btn">Çıkış</button>
+      <button class="add-btn" id="add-btn" type="button" aria-expanded="false" aria-controls="job-form" aria-label="Yeni yedekleme ekle">+</button>
+    </div>
   </header>
 
   <nav class="tabs" role="tablist">
@@ -467,7 +491,7 @@ $("tab-jobs").addEventListener("click", () => showTab("jobs"));
 $("tab-logs").addEventListener("click", () => showTab("logs"));
 $("log-client").addEventListener("change", loadLogs);
 $("log-level").addEventListener("change", loadLogs);
-setInterval(() => { if (!$("logs-view").hidden) loadLogs(); }, 5000);   // sekme açıkken 5 saniyede bir yenile
+setInterval(() => { if (loggedIn && !$("logs-view").hidden) loadLogs(); }, 5000);   // sekme açıkken 5 saniyede bir yenile
 
 // ---- Geri yükleme ----
 // pCloud işlerinde API dosyaları kendisi getirir; yerel işlerde servis 5 saniye içinde gönderir.
@@ -767,11 +791,69 @@ function selectConfig() {
   sel.addRange(range);
 }
 
+// ---- Giriş ----
+let loggedIn = false;
+
+// API "giriş gerekli" (401) derse giriş ekranına dön (örn. API yeniden başladıysa oturum düşer)
+const apiFetch = window.fetch.bind(window);
+window.fetch = (url, options) => apiFetch(url, options).then((response) => {
+  if (response.status === 401 && !String(url).endsWith("/login")) showLogin();
+  return response;
+});
+
+function showLogin() {
+  loggedIn = false;
+  $("app").hidden = true;
+  $("login-view").hidden = false;
+  $("login-user").focus();
+}
+
+function showApp() {
+  loggedIn = true;
+  $("login-view").hidden = true;
+  $("app").hidden = false;
+  load();
+  loadStatus();
+}
+
+$("login-view").addEventListener("submit", (e) => {
+  e.preventDefault();
+  fetch(API_URL + "/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username: $("login-user").value, password: $("login-pass").value })
+  })
+    .then((response) => {
+      $("login-pass").value = "";
+      if (response.ok) {
+        $("login-error").hidden = true;
+        showApp();
+        return;
+      }
+      $("login-error").textContent = response.status === 401
+        ? "Kullanıcı adı ya da şifre yanlış."
+        : "Giriş yapılamadı (HTTP " + response.status + "). API bilgisayarında set_password.py çalıştırıldı mı?";
+      $("login-error").hidden = false;
+    })
+    .catch((error) => {
+      $("login-error").textContent = "API'ye ulaşılamadı: " + error.message;
+      $("login-error").hidden = false;
+    });
+});
+
+$("logout-btn").addEventListener("click", () => {
+  fetch(API_URL + "/logout", { method: "POST" }).finally(() => location.reload());
+});
+
 updateScheduleFields();
 render();
-load();
-loadStatus();
-setInterval(loadStatus, 3000);   // durum 3 saniyede bir yenilenir
+setInterval(() => { if (loggedIn) loadStatus(); }, 3000);   // durum 3 saniyede bir yenilenir
+
+// Açılışta: giriş yapılmışsa paneli, yapılmamışsa giriş ekranını göster
+fetch(API_URL + "/me")
+  .then((response) => response.json())
+  .then((me) => (me.logged_in ? showApp() : showLogin()))
+  .catch(() => showLogin());
 </script>
 </body>
 </html>
