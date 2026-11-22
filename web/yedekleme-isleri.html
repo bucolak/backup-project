@@ -95,7 +95,7 @@ form h2 { font-size: 16px; font-weight: 600; }
 .tip:hover, .tip:focus-visible { border-color: var(--accent); color: var(--accent); }
 .tip::after { content: attr(data-tip); position: absolute; left: 50%; bottom: calc(100% + 8px); transform: translateX(-50%); width: max-content; max-width: 280px; white-space: pre-line; text-align: left; padding: 8px 10px; border-radius: 6px; background: var(--fg); color: var(--surface); font-size: 12.5px; font-weight: 400; line-height: 1.45; box-shadow: 0 4px 14px rgba(0,0,0,.18); opacity: 0; visibility: hidden; pointer-events: none; z-index: 10; }
 .tip:hover::after, .tip:focus::after { opacity: 1; visibility: visible; }
-input[type="text"], input[type="password"], input[type="time"], input[type="number"], select {
+input[type="text"], input[type="password"], input[type="email"], input[type="time"], input[type="number"], select {
   font: inherit; color: var(--fg); background: var(--surface); border: 1px solid var(--line);
   border-radius: 6px; padding: 8px 10px; min-height: 40px; width: 100%; min-width: 0;
 }
@@ -133,6 +133,15 @@ fieldset { border: 0; padding: 0; margin: 0; display: flex; flex-direction: colu
 .del:hover { color: var(--err); background: var(--err-soft); }
 .edit { border: 1px solid var(--line); background: var(--surface); color: var(--fg); font-size: 13px; padding: 4px 10px; border-radius: 6px; }
 .edit:hover { border-color: var(--accent); color: var(--accent); }
+
+/* Makineler sekmesi */
+.mrow { display: flex; align-items: center; gap: 12px; padding: 12px 16px; }
+.mrow + .mrow { border-top: 1px solid var(--line); }
+.mrow .name { flex: 1; min-width: 0; overflow-wrap: anywhere; font-weight: 500; }
+.trash { border: 0; background: none; color: var(--muted); padding: 6px; border-radius: 6px; display: inline-flex; }
+.trash:hover { color: var(--err); background: var(--err-soft); }
+.pair-form { display: flex; flex-direction: column; gap: 12px; padding: 16px; }
+.ok-msg { margin: 0; padding: 8px 12px; border-radius: 6px; background: var(--accent-soft); color: var(--accent); font-size: 14px; }
 
 /* Geri yükleme */
 .rfile { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; gap: 4px 12px; align-items: center; padding: 8px 16px; font-size: 13px; }
@@ -242,6 +251,8 @@ pre { margin: 0; padding: 14px 16px; overflow-x: auto; font-family: var(--font-m
     <button class="tab" type="button" role="tab" id="tab-jobs" aria-selected="true">İşler</button>
     <button class="tab" type="button" role="tab" id="tab-logs" aria-selected="false">Loglar</button>
     <button class="tab" type="button" role="tab" id="tab-restore" aria-selected="false">Geri yükle</button>
+    <button class="tab" type="button" role="tab" id="tab-machines" aria-selected="false">Makineler</button>
+    <button class="tab" type="button" role="tab" id="tab-settings" aria-selected="false">Ayarlar</button>
   </nav>
 
   <div id="jobs-view" style="display:flex;flex-direction:column;gap:20px">
@@ -250,8 +261,8 @@ pre { margin: 0; padding: 14px 16px; overflow-x: auto; font-family: var(--font-m
     <h2 id="form-title">Yeni yedekleme</h2>
 
     <div class="field">
-      <label for="client">Makine</label>
-      <input type="text" id="client" placeholder="windows-pc" autocomplete="off" spellcheck="false">
+      <label for="machine">Makine</label>
+      <select id="machine"><option value="">Makine seç</option></select>
     </div>
     <div class="field">
       <label for="source">Kaynak klasör</label>
@@ -381,6 +392,62 @@ pre { margin: 0; padding: 14px 16px; overflow-x: auto; font-family: var(--font-m
       <button class="btn primary" type="button" id="restore-download">Seçilenleri indir</button>
     </div>
   </div>
+
+  <div id="machines-view" hidden style="display:flex;flex-direction:column;gap:16px">
+    <form class="box pair-form" id="pair-form" novalidate>
+      <h2 style="font-size:15px;font-weight:600">Makine ekle</h2>
+      <div class="filters">
+        <div class="field">
+          <label for="pair-code">Eşleştirme kodu</label>
+          <input type="text" id="pair-code" class="path" placeholder="K7P2-9XQM" autocomplete="off" spellcheck="false">
+        </div>
+        <div class="field">
+          <label for="pair-name">Makine adı</label>
+          <input type="text" id="pair-name" placeholder="muhasebe-pc" autocomplete="off" spellcheck="false">
+        </div>
+      </div>
+      <p class="hint">Kod, makinedeki servis klasöründe <span class="mono">pairing_code.txt</span> dosyasında yazar. 24 saat geçerlidir.</p>
+      <p class="error" id="pair-error" role="alert" hidden></p>
+      <p class="ok-msg" id="pair-ok" role="status" hidden></p>
+      <div class="actions"><button class="btn primary" type="submit">Makine ekle</button></div>
+    </form>
+    <p class="error" id="machine-error" role="alert" hidden></p>
+    <div class="box list" id="machine-list"></div>
+  </div>
+
+  <div id="settings-view" hidden style="display:flex;flex-direction:column;gap:16px">
+    <form class="box pair-form" id="email-form" novalidate>
+      <h2 style="font-size:15px;font-weight:600">Bildirim e-postası</h2>
+      <div class="field">
+        <label for="email">E-posta adresi</label>
+        <input type="email" id="email" placeholder="ornek@sirket.com" autocomplete="email" spellcheck="false">
+      </div>
+      <p class="hint">Sorunlar (yedekleme başarısız, makine ulaşılamıyor, hedef disk dolu...) ve düzelmeleri bu adrese bildirilir. Boş bırakılırsa mail gönderilmez.</p>
+      <p class="error" id="email-error" role="alert" hidden></p>
+      <p class="ok-msg" id="email-ok" role="status" hidden></p>
+      <div class="actions"><button class="btn primary" type="submit">Kaydet</button></div>
+    </form>
+
+    <form class="box pair-form" id="password-form" novalidate>
+      <h2 style="font-size:15px;font-weight:600">Şifre değiştir</h2>
+      <div class="field">
+        <label for="pw-current">Mevcut şifre</label>
+        <input type="password" id="pw-current" autocomplete="current-password">
+      </div>
+      <div class="field">
+        <label for="pw-new">Yeni şifre</label>
+        <input type="password" id="pw-new" autocomplete="new-password">
+      </div>
+      <div class="field">
+        <label for="pw-new2">Yeni şifre (tekrar)</label>
+        <input type="password" id="pw-new2" autocomplete="new-password">
+      </div>
+      <p class="hint">Yeni şifre en az 8 karakter olmalı. Şifre değişince diğer cihazlardaki açık oturumlar kapanır.</p>
+      <p class="error" id="pw-error" role="alert" hidden></p>
+      <p class="ok-msg" id="pw-ok" role="status" hidden></p>
+      <div class="actions"><button class="btn primary" type="submit">Şifreyi değiştir</button></div>
+    </form>
+  </div>
 </div>
 
 <script>
@@ -397,7 +464,8 @@ const form = $("job-form");
 const addBtn = $("add-btn");
 
 let jobs = [];
-let statuses = {};      // client_id -> makinenin API'ye son gönderdiği durum
+let machines = {};      // makine id'si -> makine adı (API'ye kayıtlı makineler)
+let statuses = {};      // makine id'si -> makinenin API'ye son gönderdiği durum
 let editIndex = null;   // düzenlenen işin sırası; yeni iş eklenirken null
 
 // İşleri API'den al
@@ -409,6 +477,32 @@ function load() {
     })
     .then((data) => { jobs = data; render(); })
     .catch((error) => showApiError("İşler alınamadı. " + error.message));
+}
+
+// Kayıtlı makineleri API'den al; formdaki makine listesini yenile
+function loadMachines() {
+  return fetch(API_URL + "/machines")
+    .then((response) => {
+      if (!response.ok) throw new Error("API hata döndürdü: HTTP " + response.status);
+      return response.json();
+    })
+    .then((data) => {
+      machines = {};
+      data.forEach((m) => { machines[m.id] = m.name; });
+      const select = $("machine");
+      const current = select.value;
+      select.innerHTML = `<option value="">Makine seç</option>` +
+        data.map((m) => `<option value="${esc(m.id)}">${esc(m.name)}</option>`).join("");
+      select.value = current in machines ? current : "";
+      render();
+      renderMachines(data);
+    })
+    .catch((error) => showApiError("Makineler alınamadı. " + error.message));
+}
+
+// Ekranda makinenin id'si yerine adı görünür (adı bilinmiyorsa id)
+function machineName(id) {
+  return machines[id] || id;
 }
 
 // İşlerin son halini API'ye gönder
@@ -437,7 +531,7 @@ function loadStatus() {
     })
     .then((data) => {
       statuses = {};
-      data.forEach((row) => { statuses[row.client_id] = row; });
+      data.forEach((row) => { statuses[row.machine_id] = row; });
       render();
     })
     .catch(() => {});   // durum alınamazsa liste eskisi gibi görünür; hata kutusu işler içindir
@@ -454,7 +548,7 @@ function timeText(iso) {
 
 // Bir işin durumunu (son sonuç, ilerleme) gösteren HTML
 function statusHtml(j) {
-  const row = statuses[j.client_id];
+  const row = statuses[j.machine_id];
   const s = row && row.status.jobs.find((x) => x.source === j.source && x.target === j.target);
   if (!s) return `<div class="job-status">Durum bilgisi yok</div>`;
 
@@ -485,7 +579,7 @@ function statusHtml(j) {
 // ---- Loglar sekmesi ----
 function loadLogs() {
   const params = new URLSearchParams();
-  if ($("log-client").value) params.set("client_id", $("log-client").value);
+  if ($("log-client").value) params.set("machine_id", $("log-client").value);
   if ($("log-level").value) params.set("level", $("log-level").value);
   fetch(API_URL + "/logs?" + params)
     .then((response) => {
@@ -497,7 +591,7 @@ function loadLogs() {
       $("logs").innerHTML = rows.length ? rows.map((r) => `
         <div class="log">
           <time>${esc(timeText(r.time))}</time>
-          <span class="client">${esc(r.client_id)}</span>
+          <span class="client">${esc(r.machine_name || r.machine_id)}</span>
           <span class="lvl ${esc(r.level)}">${esc(r.level)}</span>
           <div class="msg">${esc(r.message)}${r.error ? `<details><summary>Hata ayrıntısı</summary><pre>${esc(r.error)}</pre></details>` : ""}</div>
         </div>`).join("")
@@ -509,28 +603,175 @@ function loadLogs() {
     });
 }
 
-// Makine filtresindeki seçenekler: işlerde ve durumlarda geçen makine adları
+// Seçeneklerin değeri makine id'si, görünen yazısı makine adı; ada göre sıralı
+function machineOptions(ids) {
+  return ids.sort((a, b) => machineName(a).localeCompare(machineName(b)))
+    .map((id) => `<option value="${esc(id)}">${esc(machineName(id))}</option>`).join("");
+}
+
+// Makine filtresindeki seçenekler: işlerde ve durumlarda geçen makineler
 function updateLogClients() {
-  const names = [...new Set([...jobs.map((j) => j.client_id), ...Object.keys(statuses)])].sort();
+  const ids = [...new Set([...jobs.map((j) => j.machine_id), ...Object.keys(statuses)])];
   const select = $("log-client");
   const current = select.value;
-  select.innerHTML = `<option value="">Tümü</option>` + names.map((n) => `<option value="${esc(n)}">${esc(n)}</option>`).join("");
-  select.value = names.includes(current) ? current : "";
+  select.innerHTML = `<option value="">Tümü</option>` + machineOptions(ids);
+  select.value = ids.includes(current) ? current : "";
 }
 
 function showTab(name) {
-  ["jobs", "logs", "restore"].forEach((tab) => {
+  ["jobs", "logs", "restore", "machines", "settings"].forEach((tab) => {
     $(tab + "-view").hidden = tab !== name;
     $("tab-" + tab).setAttribute("aria-selected", String(tab === name));
   });
   addBtn.hidden = name !== "jobs";   // + butonu sadece İşler sekmesinde
   if (name === "logs") { updateLogClients(); loadLogs(); }
   if (name === "restore") updateRestoreClients();
+  if (name === "machines") loadMachines();
+  if (name === "settings") loadAccount();
 }
 
 $("tab-jobs").addEventListener("click", () => showTab("jobs"));
 $("tab-logs").addEventListener("click", () => showTab("logs"));
 $("tab-restore").addEventListener("click", () => showTab("restore"));
+$("tab-machines").addEventListener("click", () => showTab("machines"));
+$("tab-settings").addEventListener("click", () => showTab("settings"));
+
+// ---- Ayarlar ----
+$("password-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  $("pw-error").hidden = true;
+  $("pw-ok").hidden = true;
+  const current = $("pw-current").value;
+  const next = $("pw-new").value;
+  const fail = (text) => { $("pw-error").textContent = text; $("pw-error").hidden = false; };
+  if (!current || !next) return fail("Mevcut ve yeni şifreyi yaz.");
+  if (next.length < 8) return fail("Yeni şifre en az 8 karakter olmalı.");
+  if (next !== $("pw-new2").value) return fail("Yeni şifreler aynı değil.");
+  fetch(API_URL + "/account/password", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ current, new: next })
+  }).then((response) => response.json().then((data) => {
+    if (response.ok) {
+      $("password-form").reset();
+      $("pw-ok").textContent = "Şifre değiştirildi.";
+      $("pw-ok").hidden = false;
+    } else if (data.detail === "current password is wrong") {
+      fail("Mevcut şifre yanlış.");
+    } else if (response.status === 429) {
+      fail("Çok fazla yanlış deneme yapıldı. 10 dakika sonra tekrar dene.");
+    } else {
+      fail("Şifre değiştirilemedi (HTTP " + response.status + ").");
+    }
+  }));
+});
+
+function loadAccount() {
+  $("email-error").hidden = true;
+  $("email-ok").hidden = true;
+  apiJson("/account")
+    .then((account) => { $("email").value = account.email; })
+    .catch((error) => { $("email-error").textContent = "Ayarlar alınamadı. " + error.message; $("email-error").hidden = false; });
+}
+
+$("email-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  $("email-error").hidden = true;
+  $("email-ok").hidden = true;
+  const email = $("email").value.trim();
+  if (email && !email.includes("@")) {
+    $("email-error").textContent = "Geçerli bir e-posta adresi yaz.";
+    $("email-error").hidden = false;
+    return;
+  }
+  machineRequest("PUT", "/account/email", { email }).then((status) => {
+    if (status === 200) {
+      $("email-ok").textContent = email ? "Kaydedildi. Bildirimler " + email + " adresine gidecek." : "Kaydedildi. Mail gönderilmeyecek.";
+      $("email-ok").hidden = false;
+    } else {
+      $("email-error").textContent = "Kaydedilemedi (HTTP " + status + ").";
+      $("email-error").hidden = false;
+    }
+  });
+});
+
+// ---- Makineler ----
+// Makine eklemek: makinedeki pairing_code.txt'deki kod + bir ad girilir. Aynı hesapta aynı ad olamaz.
+// İstek sonucu HTTP koduyla döner: hata mesajı koda göre seçilir.
+function machineRequest(method, url, body) {
+  return fetch(API_URL + url, {
+    method,
+    headers: { "Content-Type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body)
+  }).then((response) => response.status);
+}
+
+const MACHINE_ERRORS = {
+  400: "Kod yanlış ya da süresi dolmuş.",
+  409: "Bu hesapta bu adda bir makine zaten var.",
+  429: "Çok fazla yanlış kod girildi. 10 dakika sonra tekrar dene."
+};
+
+function renderMachines(list) {
+  $("machine-list").innerHTML = list.length
+    ? list.map((m) => `
+      <div class="mrow">
+        <span class="name">${esc(m.name)}</span>
+        <button class="edit" type="button" data-id="${esc(m.id)}">Adını değiştir</button>
+        <button class="trash" type="button" data-id="${esc(m.id)}" aria-label="Hesaptan çıkar" title="Hesaptan çıkar"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14M10 11v6M14 11v6"/></svg></button>
+      </div>`).join("")
+    : `<div class="mrow muted">Henüz makine yok. Yukarıdan kod ile ekleyebilirsin.</div>`;
+}
+
+$("pair-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  $("pair-error").hidden = true;
+  $("pair-ok").hidden = true;
+  const code = $("pair-code").value.trim();
+  const name = $("pair-name").value.trim();
+  if (!code || !name) {
+    $("pair-error").textContent = "Kodu ve makine adını yaz.";
+    $("pair-error").hidden = false;
+    return;
+  }
+  machineRequest("POST", "/machines/pair", { code, name }).then((status) => {
+    if (status === 200) {
+      $("pair-form").reset();
+      $("pair-ok").textContent = "Makine eklendi: " + name;
+      $("pair-ok").hidden = false;
+      loadMachines();
+    } else {
+      $("pair-error").textContent = MACHINE_ERRORS[status] || "Makine eklenemedi (HTTP " + status + ").";
+      $("pair-error").hidden = false;
+    }
+  });
+});
+
+$("machine-list").addEventListener("click", (e) => {
+  const editBtn = e.target.closest(".edit");
+  const trashBtn = e.target.closest(".trash");
+  if (!editBtn && !trashBtn) return;
+  const id = (editBtn || trashBtn).dataset.id;
+  const name = machines[id];
+  $("machine-error").hidden = true;
+  const fail = (status) => {
+    $("machine-error").textContent = status === 409 ? MACHINE_ERRORS[409] : "İşlem yapılamadı (HTTP " + status + ").";
+    $("machine-error").hidden = false;
+  };
+
+  if (editBtn) {
+    const newName = prompt("Makinenin yeni adı:", name);
+    if (newName === null || !newName.trim() || newName.trim() === name) return;
+    machineRequest("PUT", "/machines/" + encodeURIComponent(id) + "/name", { name: newName.trim() })
+      .then((status) => { if (status === 200) loadMachines(); else fail(status); });
+    return;
+  }
+
+  if (!confirm(`"${name}" hesaptan çıkarılsın mı?\n\nBu makinenin işleri silinir. Geçmiş logları kalır.`)) return;
+  machineRequest("DELETE", "/machines/" + encodeURIComponent(id)).then((status) => {
+    if (status === 200) { loadMachines(); load(); } else fail(status);
+  });
+});
 $("log-client").addEventListener("change", loadLogs);
 $("log-level").addEventListener("change", loadLogs);
 setInterval(() => { if (loggedIn && !$("logs-view").hidden) loadLogs(); }, 5000);   // sekme açıkken 5 saniyede bir yenile
@@ -571,11 +812,11 @@ function waitRequest(id, run) {
 
 // Makine listesi: işi olan makineler
 function updateRestoreClients() {
-  const names = [...new Set(jobs.map((j) => j.client_id))].sort();
+  const ids = [...new Set(jobs.map((j) => j.machine_id))];
   const select = $("restore-client");
   const current = select.value;
-  select.innerHTML = `<option value="">Makine seç</option>` + names.map((n) => `<option value="${esc(n)}">${esc(n)}</option>`).join("");
-  select.value = names.includes(current) ? current : "";
+  select.innerHTML = `<option value="">Makine seç</option>` + machineOptions(ids);
+  select.value = ids.includes(current) ? current : "";
 }
 
 // Dosyaları tarih klasörlerine ayır: "2026-11-23_02-00-00/alt/a.txt" -> klasör "2026-11-23_02-00-00", ad "alt/a.txt"
@@ -596,7 +837,7 @@ function groupByFolder(files) {
 function loadRestore() {
   const run = ++restoreRun;
   const client = $("restore-client").value;
-  restoreJobs = jobs.filter((j) => j.client_id === client);
+  restoreJobs = jobs.filter((j) => j.machine_id === client);
   $("restore-foot").hidden = true;
   updateRestoreCount();
   $("restore-jobs").innerHTML = restoreJobs.map((j, n) => `
@@ -607,7 +848,7 @@ function loadRestore() {
 
   restoreJobs.forEach((j, n) => {
     const box = $("rjob-" + n);
-    postJson("/restore/list", { client_id: j.client_id, source: j.source, target: j.target })
+    postJson("/restore/list", { machine_id: j.machine_id, source: j.source, target: j.target })
       .then((r) => waitRequest(r.id, run))
       .then((r) => {
         if (r.status === "error") throw new Error(r.error);
@@ -649,7 +890,7 @@ function downloadOne(box, run) {
   const state = box.closest(".rfile").querySelector(".rstate");
   state.classList.remove("err");
   state.textContent = "Hazırlanıyor…";
-  postJson("/restore/file", { client_id: job.client_id, source: job.source, target: job.target, path: box.dataset.path })
+  postJson("/restore/file", { machine_id: job.machine_id, source: job.source, target: job.target, path: box.dataset.path })
     .then((r) => waitRequest(r.id, run))
     .then((r) => {
       if (r.status === "error") throw new Error(r.error);
@@ -707,7 +948,7 @@ function scheduleText(s) {
 function updateTargetField() {
   const cloud = $("target-type").value !== "local";
   $("target-label").textContent = cloud ? "Buluttaki klasör" : "Hedef klasör";
-  $("target").placeholder = cloud ? "backup-project/" + ($("client").value.trim() || "makine-adi") : "D:\\Yedek\\Belgeler";
+  $("target").placeholder = cloud ? "backup-project/" + (machines[$("machine").value] || "makine-adi") : "D:\\Yedek\\Belgeler";
 }
 
 // Mod düğmeleri: seçili değeri oku / bir değeri seç
@@ -737,7 +978,7 @@ function normPath(p) {
 }
 
 function validate(job) {
-  if (!job.client_id) return "Makine adını yaz.";
+  if (!job.machine_id) return "Makine seç.";
   if (!job.source) return "Kaynak klasörü yaz.";
   if (!job.target) return "Hedef klasörü yaz.";
   if (job.target_type === "local") {
@@ -746,7 +987,7 @@ function validate(job) {
     if (src === dst) return "Kaynak ve hedef aynı klasör olamaz.";
     if ((dst + "\\").startsWith(src + "\\")) return "Hedef, kaynağın içinde olamaz; yedekler tekrar tekrar kopyalanır.";
   }
-  if (jobs.some((j, i) => i !== editIndex && j.client_id === job.client_id && j.source === job.source && (j.target_type || "local") === job.target_type && j.target === job.target)) return "Bu makinede bu kaynak ve hedefle bir iş zaten var.";
+  if (jobs.some((j, i) => i !== editIndex && j.machine_id === job.machine_id && j.source === job.source && (j.target_type || "local") === job.target_type && j.target === job.target)) return "Bu makinede bu kaynak ve hedefle bir iş zaten var.";
 
   const s = job.schedule;
   if (s.type !== "interval" && !/^([01]\d|2[0-3]):[0-5]\d$/.test(s.time || "")) return "Saati seç.";
@@ -767,7 +1008,7 @@ function readForm() {
     schedule.days = DAYS.filter((d) => $("day-" + d).checked);
   }
   return {
-    client_id: $("client").value.trim(),
+    machine_id: $("machine").value,
     source: $("source").value.trim(),
     target_type: $("target-type").value,
     target: $("target").value.trim(),
@@ -783,7 +1024,7 @@ function render() {
   $("list").innerHTML = jobs.length
     ? jobs.map((j, i) => `
       <div class="job">
-        <div class="route mono"><span class="client">${esc(j.client_id)}</span><span>${esc(j.source)}</span><span class="to"><span class="type">${MODES[j.mode || "copy"]}${(j.compression || "none") === "zip" ? " · Zip" : ""} · ${(j.backup_type || "full") === "incremental" ? "Incremental" : "Full"} · ${typeLabel(j.target_type)}</span>${esc(j.target)}</span></div>
+        <div class="route mono"><span class="client">${esc(machineName(j.machine_id))}</span><span>${esc(j.source)}</span><span class="to"><span class="type">${MODES[j.mode || "copy"]}${(j.compression || "none") === "zip" ? " · Zip" : ""} · ${(j.backup_type || "full") === "incremental" ? "Incremental" : "Full"} · ${typeLabel(j.target_type)}</span>${esc(j.target)}</span></div>
         <span class="chip">${esc(scheduleText(j.schedule))}</span>
         <button class="edit" type="button" data-i="${i}">Düzenle</button>
         <button class="del" type="button" data-i="${i}" aria-label="${esc(j.source)} işini sil">×</button>
@@ -795,7 +1036,7 @@ function render() {
 
 // Formu bir işin değerleriyle doldur (düzenleme için)
 function fillForm(job) {
-  $("client").value = job.client_id;
+  $("machine").value = job.machine_id;
   $("source").value = job.source;
   $("target-type").value = job.target_type || "local";
   $("target").value = job.target;
@@ -813,6 +1054,7 @@ function fillForm(job) {
 function openForm(open, index = null) {
   editIndex = open ? index : null;
   form.reset();
+  if (open) loadMachines();   // form açılırken yeni kaydolan makineler de listede olsun
   updateScheduleFields();
   updateTargetField();
   if (editIndex !== null) fillForm(jobs[editIndex]);
@@ -822,14 +1064,14 @@ function openForm(open, index = null) {
   addBtn.setAttribute("aria-expanded", String(open));
   addBtn.setAttribute("aria-label", open ? "Formu kapat" : "Yeni yedekleme ekle");
   $("form-error").hidden = true;
-  if (open) $("client").focus();
+  if (open) $("machine").focus();
 }
 
 addBtn.addEventListener("click", () => openForm(form.hidden || editIndex !== null));
 $("cancel-btn").addEventListener("click", () => openForm(false));
 $("type").addEventListener("change", updateScheduleFields);
 $("target-type").addEventListener("change", updateTargetField);
-$("client").addEventListener("input", updateTargetField);
+$("machine").addEventListener("change", updateTargetField);
 
 form.addEventListener("submit", (e) => {
   e.preventDefault();
@@ -903,6 +1145,7 @@ function showApp() {
   loggedIn = true;
   $("login-view").hidden = true;
   $("app").hidden = false;
+  loadMachines();
   load();
   loadStatus();
 }
@@ -923,7 +1166,9 @@ $("login-view").addEventListener("submit", (e) => {
       }
       $("login-error").textContent = response.status === 401
         ? "Kullanıcı adı ya da şifre yanlış."
-        : "Giriş yapılamadı (HTTP " + response.status + "). API bilgisayarında set_password.py çalıştırıldı mı?";
+        : response.status === 429
+        ? "Çok fazla yanlış deneme yapıldı. 10 dakika sonra tekrar dene."
+        : "Giriş yapılamadı (HTTP " + response.status + "). API bilgisayarında create_account.py ile hesap açıldı mı?";
       $("login-error").hidden = false;
     })
     .catch((error) => {

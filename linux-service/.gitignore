@@ -15,3 +15,5 @@ credentials.json
 # API'nin CA sertifikası: her kurulumda make_cert.py ile ayrı üretilir, elle kopyalanır
 api_ca.crt
 config.json
+machine.json
+pairing_code.txt

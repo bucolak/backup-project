@@ -6,13 +6,13 @@ import os
 import re
 import secrets
 import shutil
+import socket
 import ssl
 import stat
 import sys
 import tempfile
 import threading
 import time
-import urllib.parse
 import urllib.request
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
@@ -28,6 +28,8 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
 TARGETS_DIR = os.path.join(BASE_DIR, "targets")   # her hedef türü burada bir dosya: local.py, pcloud.py, gdrive.py ...
 API_CA_PATH = os.path.join(BASE_DIR, "api_ca.crt")   # API'nin sertifikasını onaylayan CA (make_cert.py'nin ca.crt'si)
+MACHINE_PATH = os.path.join(BASE_DIR, "machine.json")   # API'nin verdiği kimlik: id + gizli anahtar
+PAIRING_PATH = os.path.join(BASE_DIR, "pairing_code.txt")   # makine bir hesaba eklenene kadar eşleştirme kodu
 
 # targets/ ve hedeflerin kullandığı dosyalar (pcloud_storage.py, drive_storage.py) service.py'nin yanında;
 # servis hangi klasörde çalışırsa çalışsın bulunabilsin
@@ -53,8 +55,7 @@ DEFAULT_SETTINGS = {
     "log_dir": "logs",            # log klasörü (göreli ise service.py'nin yanında)
     "log_retention_days": 30,     # kaç günlük log tutulacak (0 = hiç silme)
     "history_max": 1000,          # history.json'da tutulacak son biten dosya sayısı
-    "min_free_mb": 100,           # hedef diskte her zaman boş bırakılacak alan
-    "client_id": ""               # bu makinenin adı; API'den sadece bu makinenin işleri alınır
+    "min_free_mb": 100            # hedef diskte her zaman boş bırakılacak alan
 }
 
 
@@ -225,23 +226,98 @@ last_api_check = 0                # API'ye en son ne zaman soruldu
 last_status_report = 0            # durum API'ye en son ne zaman gönderildi
 last_results = {}                 # (source, target) -> işin son çalışmasının sonucu
 api_error = False                 # API'ye ulaşılamadığı zaten loglandı mı?
+machine = None                    # bu makinenin API'deki kimliği: {"id", "secret"}; henüz yoksa None
+register_error = False            # kayıt hatası zaten loglandı mı?
+shown_pair_code = None            # en son dosyaya/loga yazılan eşleştirme kodu
+
+
+def machine_headers(content_type="application/json"):
+    """API'ye giden her isteğe eklenen kimlik: makinenin id'si ve gizli anahtarı."""
+    return {"Content-Type": content_type,
+            "X-Machine-Id": machine["id"],
+            "X-Machine-Secret": machine["secret"]}
+
+
+def register_machine():
+    """Makinenin API'deki kimliğini (id + gizli anahtar) hazırlar.
+    machine.json varsa kimlik oradan okunur. Yoksa API'ye kaydolunur, API'nin verdiği
+    kimlik machine.json'a yazılır. API'ye ulaşılamazsa bir sonraki API kontrolünde tekrar denenir."""
+    global machine, register_error
+    if os.path.exists(MACHINE_PATH):
+        try:
+            with open(MACHINE_PATH, encoding="utf-8") as f:
+                machine = json.load(f)
+        except (OSError, ValueError) as error:
+            if not register_error:
+                log.error("machine.json could not be read: %s", error)
+                register_error = True
+        return
+
+    request = urllib.request.Request(
+        API_URL + "/machines/register",
+        data=json.dumps({"name": socket.gethostname()}).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST"
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=5, context=API_SSL) as response:
+            answer = json.loads(response.read().decode("utf-8"))
+    except (OSError, ValueError) as error:
+        if not register_error:
+            log.error("Could not register with API, will retry: %s", error)
+            register_error = True
+        return
+
+    machine = {"id": answer["id"], "secret": answer["secret"]}
+    write_json(MACHINE_PATH, machine)
+    register_error = False
+    log.info("Registered with API, machine id: %s", machine["id"])
+
+
+def check_pairing():
+    """Makine bir hesaba bağlı mı, API'ye sorar.
+    Bağlı değilse eşleştirme kodu pairing_code.txt'ye ve loga yazılır (kod değiştiğinde).
+    Bağlıysa pairing_code.txt silinir. Hata olursa sessizce geçilir (API hatasını sync_from_api loglar)."""
+    global shown_pair_code
+    if machine is None:
+        return
+    request = urllib.request.Request(API_URL + "/machines/me", headers=machine_headers())
+    try:
+        with urllib.request.urlopen(request, timeout=5, context=API_SSL) as response:
+            answer = json.loads(response.read().decode("utf-8"))
+    except (OSError, ValueError):
+        return
+
+    if answer["paired"]:
+        shown_pair_code = None
+        if os.path.exists(PAIRING_PATH):
+            os.remove(PAIRING_PATH)
+        return
+
+    code = answer["pair_code"]
+    if code == shown_pair_code:
+        return
+    valid_until = datetime.fromisoformat(answer["pair_expires"]).astimezone().strftime("%Y-%m-%d %H:%M")
+    with open(PAIRING_PATH, "w", encoding="utf-8") as f:
+        f.write("Eşleştirme kodu: %s\n" % code)
+        f.write("Geçerlilik: %s'e kadar\n" % valid_until)
+        f.write("Panelde Makineler > Makine ekle bölümüne bu kodu girin.\n")
+    shown_pair_code = code
+    log.info("Pairing code: %s (valid until %s). Enter it in the panel to add this machine to an account.",
+             code, valid_until)
 
 
 def sync_from_api():
     """API'deki işleri alır; config.json'dakilerden farklıysa config.json'ı günceller.
     config.json değişince reload_config() yeni işleri kendisi okur."""
     global api_error
-    client_id = settings["client_id"]
-    if not client_id:
-        if not api_error:
-            log.error("settings.client_id is not set, jobs are not taken from API")
-            api_error = True
-        return
+    if machine is None:
+        return   # henüz kimlik yok (API'ye kaydolunamadı): register_machine() tekrar deneyecek
 
-    # Sadece bu makinenin işlerini iste: /jobs?client_id=muhasebe-pc
-    url = API_URL + "/jobs?client_id=" + urllib.parse.quote(client_id)
+    # Sadece bu makinenin işlerini iste: API makineyi kimlik başlıklarından tanır
+    request = urllib.request.Request(API_URL + "/jobs", headers=machine_headers())
     try:
-        with urllib.request.urlopen(url, timeout=5, context=API_SSL) as response:
+        with urllib.request.urlopen(request, timeout=5, context=API_SSL) as response:
             api_jobs = json.loads(response.read().decode("utf-8"))
     except (OSError, ValueError) as error:
         if not api_error:
@@ -437,12 +513,6 @@ def apply_settings(raw):
         raw = {}
 
     new = dict(DEFAULT_SETTINGS)
-
-    value = raw.get("client_id", new["client_id"])
-    if isinstance(value, str):
-        new["client_id"] = value.strip()
-    else:
-        errors.append("invalid settings.client_id: %r, must be text" % value)
 
     value = raw.get("log_dir", new["log_dir"])
     if isinstance(value, str) and value.strip():
@@ -953,16 +1023,14 @@ def write_status(data):
 
 def report_logs():
     """Biriken yeni log satırlarını API'ye gönderir; gönderilenler kuyruktan silinir."""
-    client_id = settings["client_id"]
     pending = api_log_handler.pending
-    if not client_id or not pending:
+    if machine is None or not pending:
         return
     entries = list(pending)
-    url = API_URL + "/logs?client_id=" + urllib.parse.quote(client_id)
     request = urllib.request.Request(
-        url,
+        API_URL + "/logs",
         data=json.dumps(entries, ensure_ascii=False).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
+        headers=machine_headers(),
         method="POST"
     )
     try:
@@ -977,7 +1045,7 @@ def report_logs():
 def api_post(path, data, content_type="application/json"):
     """API'ye POST gönderir. data: bayt ya da açık dosya (dosya parça parça gönderilir)."""
     request = urllib.request.Request(API_URL + path, data=data, method="POST",
-                                     headers={"Content-Type": content_type})
+                                     headers=machine_headers(content_type))
     if hasattr(data, "read"):
         request.add_header("Content-Length", str(os.fstat(data.fileno()).st_size))
     with urllib.request.urlopen(request, timeout=60, context=API_SSL):
@@ -986,12 +1054,11 @@ def api_post(path, data, content_type="application/json"):
 
 def handle_restores():
     """API'deki bekleyen geri yükleme isteklerini yerine getirir (bütün hedef türleri için aynı)."""
-    client_id = settings["client_id"]
-    if not client_id:
+    if machine is None:
         return
     try:
-        url = API_URL + "/restore/pending?client_id=" + urllib.parse.quote(client_id)
-        with urllib.request.urlopen(url, timeout=5, context=API_SSL) as response:
+        request = urllib.request.Request(API_URL + "/restore/pending", headers=machine_headers())
+        with urllib.request.urlopen(request, timeout=5, context=API_SSL) as response:
             requests_ = json.loads(response.read().decode("utf-8"))
     except (OSError, ValueError):
         return   # API'ye ulaşılamadı: bir sonraki turda tekrar sorulur
@@ -1032,14 +1099,12 @@ def restore_loop():
 
 def report_status(data):
     """Durumu API'ye gönderir; panel buradan okur."""
-    client_id = settings["client_id"]
-    if not client_id:
+    if machine is None:
         return
-    url = API_URL + "/status?client_id=" + urllib.parse.quote(client_id)
     request = urllib.request.Request(
-        url,
+        API_URL + "/status",
         data=json.dumps(data, ensure_ascii=False).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
+        headers=machine_headers(),
         method="POST"
     )
     try:
@@ -1107,6 +1172,9 @@ class BackupService(win32serviceutil.ServiceFramework):
                 # Belirli aralıklarla API'ye sor, işler değiştiyse config.json'ı güncelle
                 if time.time() - last_api_check >= API_CHECK_SECONDS:
                     last_api_check = time.time()
+                    if machine is None:
+                        register_machine()   # ilk açılışta API'ye kaydol (kimlik yoksa)
+                    check_pairing()          # hesaba bağlı değilse eşleştirme kodunu göster
                     sync_from_api()
 
                 reload_config()
