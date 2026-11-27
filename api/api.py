@@ -19,14 +19,58 @@ from typing import Optional
 
 from fastapi import Body, Cookie, Depends, FastAPI, Header, HTTPException, Request, Response
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
 
 LOG_RETENTION_DAYS = 30   # API'de kaç günlük log tutulacak
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "backup.db")
-WEB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "web", "yedekleme-isleri.html")
+WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "web")   # panel: index.html, style.css, app.js, fonts/
 RESTORE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "restore_tmp")   # servisten gelen dosyalar, indirilene kadar
 PASSWORD_ITERATIONS = 600_000   # şifre hash'i kaç tur hesaplanır: tahmin denemelerini yavaşlatır (create_account.py de kullanır)
 PASSWORD_MIN_LENGTH = 8         # yeni şifre en az kaç karakter olmalı (create_account.py de kullanır)
+LANG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "lang")   # dil dosyaları: tr.json ...; hangisi kullanılacak: language.json
+
+
+def load_language():
+    # lang/language.json'daki dilin yazılarını okur: {"language": "tr"} -> lang/tr.json (API açılırken bir kez)
+    with open(os.path.join(LANG_DIR, "language.json"), encoding="utf-8") as f:
+        language = json.load(f)["language"]
+    with open(os.path.join(LANG_DIR, language + ".json"), encoding="utf-8") as f:
+        return language, json.load(f)
+
+
+LANGUAGE, TEXTS = load_language()
+
+
+def text(code, params=None):
+    # Kod + değerlerden cümle (panelin t() fonksiyonunun aynısı): "{ad}" yerlerine değerler konur.
+    # Değer de bir kod + değer ise ({"code", "params"}) önce o yazıya çevrilir.
+    sentence = TEXTS.get(code, code)
+    for name, value in (params or {}).items():
+        if isinstance(value, dict) and "code" in value:
+            value = error_text(value)
+        sentence = sentence.replace("{%s}" % name, str(value))
+    return sentence
+
+
+def error_text(error):
+    # Servisten gelen hata ({"code", "params"}) -> cümle. İşletim sistemi hatası: dil dosyasında
+    # errno'sunun karşılığı varsa o, yoksa hatanın kendi yazısı. Eski biçim (düz yazı) olduğu gibi.
+    if not isinstance(error, dict):
+        return error
+    params = error.get("params") or {}
+    if error.get("code") == "error.os":
+        reason = TEXTS.get("errno.%s" % params.get("errno"))
+        if reason is None:
+            return params.get("text", "")
+        return text("error.os_path", {"reason": reason, "path": params["path"]}) if params.get("path") else reason
+    return text(error.get("code", ""), params)
+
+# Hedef türlerinin yazı olmayan bilgileri (local_path: hedef bu bilgisayardaki bir klasör mü); panel okur.
+# Türlerin yazıları (ad, alan yazısı, örnek yol, hataları) dil dosyasında: target.<tür>.label ... (API açılırken bir kez)
+TARGETS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "targets.json")
+with open(TARGETS_PATH, encoding="utf-8") as f:
+    TARGET_TYPES = json.load(f)
 
 @asynccontextmanager
 async def lifespan(app):
@@ -42,7 +86,17 @@ app = FastAPI(lifespan=lifespan)
 @app.get("/")
 def web():
     # Tarayıcıda API'nin adresi açılınca arayüzü gönder
-    return FileResponse(WEB_PATH)
+    return FileResponse(os.path.join(WEB_DIR, "index.html"))
+
+
+@app.get("/lang")
+def get_language():
+    # Panelin yazıları: seçili dilin dosyası. Giriş ekranının yazıları da buradan geldiği için giriş istemez.
+    return {"language": LANGUAGE, "texts": TEXTS}
+
+
+# Panelin stil, kod ve yazı tipi dosyaları: /assets/style.css, /assets/app.js, /assets/fonts/...
+app.mount("/assets", StaticFiles(directory=WEB_DIR), name="assets")
 
 
 # ---------------- Giriş (login) ----------------
@@ -54,7 +108,7 @@ SESSIONS = {}   # oturum anahtarı -> giriş yapan hesabın id'si
 def require_login(session: Optional[str] = Cookie(None)):
     # Panelin kullandığı adresler: geçerli oturum çerezi yoksa 401. Varsa hesabın id'si döner.
     if session not in SESSIONS:
-        raise HTTPException(401, "login required")
+        raise HTTPException(401, "login_required")
     return SESSIONS[session]
 
 
@@ -92,12 +146,12 @@ def login(request: Request, response: Response, body: dict = Body()):
     has_account = connection.execute("SELECT 1 FROM accounts LIMIT 1").fetchone() is not None
     connection.close()
     if not has_account:
-        raise HTTPException(503, "no account yet: run create_account.py on the API computer")
+        raise HTTPException(503, "no_account")
     username = body.get("username", "")
     key = (request.client.host if request.client else "", username)
     now = datetime.now()
     if LOGIN_BLOCKED.get(key, now) > now:
-        raise HTTPException(429, "too many wrong attempts, try again later")
+        raise HTTPException(429, "too_many_attempts")
     account_id = check_password(username, body.get("password", ""))
     if account_id is None:
         fails = [t for t in LOGIN_FAILS.get(key, []) if now - t < LOGIN_FAIL_WINDOW] + [now]
@@ -105,7 +159,7 @@ def login(request: Request, response: Response, body: dict = Body()):
             LOGIN_BLOCKED[key] = now + LOGIN_BLOCK
             fails = []
         LOGIN_FAILS[key] = fails
-        raise HTTPException(401, "wrong username or password")
+        raise HTTPException(401, "wrong_credentials")
     LOGIN_FAILS.pop(key, None)   # doğru giriş: o IP'nin o hesap için yanlış deneme sayacı sıfırlanır
     token = secrets.token_urlsafe(32)
     SESSIONS[token] = account_id
@@ -133,7 +187,7 @@ def me(session: Optional[str] = Cookie(None)):
 JOB_COLUMNS = {
     "machine_id": "TEXT",
     "source": "TEXT",
-    "target_type": "TEXT DEFAULT 'local'",
+    "target_type": "TEXT",
     "target": "TEXT",
     "schedule": "TEXT",
     "mode": "TEXT DEFAULT 'copy'",
@@ -149,7 +203,7 @@ def connect():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             machine_id TEXT,
             source TEXT,
-            target_type TEXT DEFAULT 'local',
+            target_type TEXT,
             target TEXT,
             schedule TEXT,
             mode TEXT DEFAULT 'copy',
@@ -167,7 +221,8 @@ def connect():
         )
     """)
 
-    # Servislerin gönderdiği log satırları
+    # Servislerin gönderdiği log satırları. code + params: cümle değil kod ve değerler
+    # (panel cümleyi dil dosyasından kurar: log.copied + {"path": ...}); message: kodu olmayan eski biçim satırlar
     connection.execute("""
         CREATE TABLE IF NOT EXISTS logs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -176,7 +231,9 @@ def connect():
             time TEXT,
             level TEXT,
             message TEXT,
-            error TEXT
+            error TEXT,
+            code TEXT,
+            params TEXT
         )
     """)
 
@@ -201,7 +258,40 @@ def connect():
             kind TEXT,
             job TEXT,
             opened_at TEXT,
+            params TEXT,
             PRIMARY KEY (machine_id, kind, job)
+        )
+    """)
+
+    # Biten her çalışma (Genel bakış: zaman çizelgesi ve son 14 gün). 30 günden eskiler silinir.
+    connection.execute("""
+        CREATE TABLE IF NOT EXISTS runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            machine_id TEXT,
+            job TEXT,
+            started TEXT,
+            finished TEXT,
+            files INTEGER,
+            failed INTEGER,
+            UNIQUE (machine_id, job, finished)
+        )
+    """)
+
+    # Genel bakıştaki olay akışı: yedekleme başladı/bitti, sorun açıldı/düzeldi, makine eklendi/çıkarıldı,
+    # geri yükleme indirildi. 30 günden eskiler silinir.
+    # Cümle saklanmaz: olayın türü (kind), işi (job) ve değerleri (params); panel cümleyi dil dosyasından kurar.
+    # Eski biçimdeki (cümleli) tablo silinip yeniden oluşturulur: eski olaylar silinir.
+    if "text" in [row[1] for row in connection.execute("PRAGMA table_info(events)")]:
+        connection.execute("DROP TABLE events")
+    connection.execute("""
+        CREATE TABLE IF NOT EXISTS events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            account_id INTEGER,
+            machine_id TEXT,
+            time TEXT,
+            kind TEXT,
+            job TEXT,
+            params TEXT
         )
     """)
 
@@ -213,6 +303,7 @@ def connect():
             first_seen TEXT,
             last_success TEXT,
             last_finished TEXT,
+            last_started TEXT,
             PRIMARY KEY (machine_id, job)
         )
     """)
@@ -259,6 +350,15 @@ def connect():
             connection.execute("ALTER TABLE jobs ADD COLUMN %s %s" % (name, column_type))
     if "email" not in [row[1] for row in connection.execute("PRAGMA table_info(accounts)")]:
         connection.execute("ALTER TABLE accounts ADD COLUMN email TEXT")
+    if "params" not in [row[1] for row in connection.execute("PRAGMA table_info(problems)")]:
+        connection.execute("ALTER TABLE problems ADD COLUMN params TEXT")
+    if "code" not in [row[1] for row in connection.execute("PRAGMA table_info(logs)")]:
+        # Loglar kod + değer biçimine geçti: eski (cümleli) loglar silinir
+        connection.execute("ALTER TABLE logs ADD COLUMN code TEXT")
+        connection.execute("ALTER TABLE logs ADD COLUMN params TEXT")
+        connection.execute("DELETE FROM logs")
+    if "last_started" not in [row[1] for row in connection.execute("PRAGMA table_info(job_health)")]:
+        connection.execute("ALTER TABLE job_health ADD COLUMN last_started TEXT")
     connection.commit()
 
     return connection
@@ -271,7 +371,7 @@ def register_machine(body: dict = Body()):
     # Gizli anahtar sadece bu cevapta bir kere gönderilir; servis onu machine.json'a yazar.
     name = body.get("name")
     if not isinstance(name, str):
-        raise HTTPException(400, "name must be text")
+        raise HTTPException(400, "name_not_text")
     machine_id = str(uuid.uuid4())
     secret = secrets.token_urlsafe(32)
     secret_hash = hashlib.sha256(secret.encode("utf-8")).hexdigest()
@@ -289,13 +389,13 @@ def require_machine(x_machine_id: Optional[str] = Header(None), x_machine_secret
     # Servisin kullandığı adresler: makine id'si ve gizli anahtarı başlıklarda gelir.
     # Gizli anahtarın hash'i DB'dekiyle aynı değilse 401. Doğruysa makinenin id'si döner.
     if not x_machine_id or not x_machine_secret:
-        raise HTTPException(401, "machine id and secret required")
+        raise HTTPException(401, "machine_credentials_required")
     connection = connect()
     row = connection.execute("SELECT secret_hash FROM machines WHERE id = ?", (x_machine_id,)).fetchone()
     connection.close()
     digest = hashlib.sha256(x_machine_secret.encode("utf-8")).hexdigest()
     if row is None or not hmac.compare_digest(digest, row[0]):
-        raise HTTPException(401, "wrong machine id or secret")
+        raise HTTPException(401, "wrong_machine_credentials")
     return x_machine_id
 
 
@@ -313,11 +413,11 @@ def now_utc():
     return datetime.now(timezone.utc)
 
 
-def add_event_log(connection, machine_id, account_id, message):
-    # Panelde yapılan makine işlemleri (eklendi / çıkarıldı) o makinenin loglarına yazılır
+def add_event_log(connection, machine_id, account_id, code, params):
+    # Panelde yapılan makine işlemleri (eklendi / çıkarıldı) o makinenin loglarına yazılır (kod + değerler)
     connection.execute(
-        "INSERT INTO logs (machine_id, account_id, time, level, message, error) VALUES (?, ?, ?, ?, ?, ?)",
-        (machine_id, account_id, datetime.now().isoformat(timespec="milliseconds"), "INFO", message, None)
+        "INSERT INTO logs (machine_id, account_id, time, level, code, params) VALUES (?, ?, ?, ?, ?, ?)",
+        (machine_id, account_id, datetime.now().isoformat(timespec="milliseconds"), "INFO", code, json.dumps(params))
     )
 
 
@@ -359,7 +459,7 @@ def get_machines(account_id: int = Depends(require_login)):
 def machine_name_or_400(body):
     name = body.get("name")
     if not isinstance(name, str) or not name.strip():
-        raise HTTPException(400, "name is required")
+        raise HTTPException(400, "name_required")
     return name.strip()
 
 
@@ -368,7 +468,7 @@ def pair_machine(body: dict = Body(), account_id: int = Depends(require_login)):
     # Panel: Body {"code", "name"} -> kodun ait olduğu makineyi bu hesaba bağla
     now = now_utc()
     if PAIR_BLOCKED.get(account_id, now) > now:
-        raise HTTPException(429, "too many wrong codes, try again later")
+        raise HTTPException(429, "too_many_attempts")
     name = machine_name_or_400(body)
     code = str(body.get("code", "")).upper().replace("-", "").replace(" ", "")
 
@@ -383,7 +483,7 @@ def pair_machine(body: dict = Body(), account_id: int = Depends(require_login)):
             PAIR_BLOCKED[account_id] = now + PAIR_BLOCK
             fails = []
         PAIR_FAILS[account_id] = fails
-        raise HTTPException(400, "wrong or expired code")
+        raise HTTPException(400, "wrong_or_expired_code")
 
     machine_id = row[0]
     try:
@@ -395,10 +495,11 @@ def pair_machine(body: dict = Body(), account_id: int = Depends(require_login)):
             # Eşleşmeden önce gelen loglar da artık bu hesapta görünsün
             connection.execute("UPDATE logs SET account_id = ? WHERE machine_id = ? AND account_id IS NULL",
                                (account_id, machine_id))
-            add_event_log(connection, machine_id, account_id, "Makine hesaba eklendi: " + name)
+            add_event_log(connection, machine_id, account_id, "log.machine_added", {"name": name})
             notify(connection, account_id, machine_id, name, "added")
+            add_event(connection, account_id, machine_id, "machine_added")
     except sqlite3.IntegrityError:
-        raise HTTPException(409, "a machine with this name already exists in your account")
+        raise HTTPException(409, "duplicate_machine_name")
     finally:
         connection.close()
     return {"id": machine_id, "name": name}
@@ -410,7 +511,7 @@ def own_machine(connection, machine_id, account_id):
                              (machine_id, account_id)).fetchone()
     if row is None:
         connection.close()
-        raise HTTPException(404, "machine not found")
+        raise HTTPException(404, "machine_not_found")
     return row[0]
 
 
@@ -424,7 +525,7 @@ def rename_machine(machine_id: str, body: dict = Body(), account_id: int = Depen
         with connection:
             connection.execute("UPDATE machines SET name = ? WHERE id = ?", (name, machine_id))
     except sqlite3.IntegrityError:
-        raise HTTPException(409, "a machine with this name already exists in your account")
+        raise HTTPException(409, "duplicate_machine_name")
     finally:
         connection.close()
     return {"id": machine_id, "name": name}
@@ -442,13 +543,20 @@ def remove_machine(machine_id: str, account_id: int = Depends(require_login)):
             "UPDATE machines SET account_id = NULL, pair_code = NULL, pair_expires = NULL WHERE id = ?",
             (machine_id,)
         )
-        add_event_log(connection, machine_id, account_id, "Makine hesaptan çıkarıldı: " + name)
+        add_event_log(connection, machine_id, account_id, "log.machine_removed", {"name": name})
         notify(connection, account_id, machine_id, name, "removed")
+        add_event(connection, account_id, machine_id, "machine_removed")
         # Makinenin açık sorunları ve iş kayıtları sessizce silinir (hesapta değil artık)
         connection.execute("DELETE FROM problems WHERE machine_id = ?", (machine_id,))
         connection.execute("DELETE FROM job_health WHERE machine_id = ?", (machine_id,))
     connection.close()
     return {"removed": True}
+
+
+@app.get("/targets")
+def get_targets(account_id: int = Depends(require_login)):
+    # Panel: iş formundaki hedef türü listesi
+    return TARGET_TYPES
 
 
 @app.get("/jobs")
@@ -486,14 +594,17 @@ def save_jobs(jobs: list = Body(), account_id: int = Depends(require_login)):
     own = {row[0] for row in connection.execute("SELECT id FROM machines WHERE account_id = ?", (account_id,))}
     if any(job.get("machine_id") not in own for job in jobs):
         connection.close()
-        raise HTTPException(400, "job machine is not in your account")
+        raise HTTPException(400, "job_machine_not_in_account")
+    if any(not job.get("target_type") for job in jobs):
+        connection.close()
+        raise HTTPException(400, "job_target_type_missing")
     with connection:   # hepsi birlikte kaydedilir ya da hiçbiri
         connection.execute("DELETE FROM jobs WHERE machine_id IN (SELECT id FROM machines WHERE account_id = ?)",
                            (account_id,))
         for job in jobs:
             connection.execute(
                 "INSERT INTO jobs (machine_id, source, target_type, target, schedule, mode, compression, backup_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (job["machine_id"], job["source"], job.get("target_type", "local"), job["target"],
+                (job["machine_id"], job["source"], job["target_type"], job["target"],
                  json.dumps(job["schedule"]), job.get("mode", "copy"), job.get("compression", "none"),
                  job.get("backup_type", "full"))
             )
@@ -537,10 +648,14 @@ def save_logs(entries: list = Body(), machine_id: str = Depends(require_machine)
     connection = connect()
     account_id = connection.execute("SELECT account_id FROM machines WHERE id = ?", (machine_id,)).fetchone()[0]
     with connection:
+        connection.execute("DELETE FROM runs WHERE finished < ?", (cutoff,))
+        connection.execute("DELETE FROM events WHERE time < ?", (cutoff,))
         for entry in entries:
             connection.execute(
-                "INSERT INTO logs (machine_id, account_id, time, level, message, error) VALUES (?, ?, ?, ?, ?, ?)",
-                (machine_id, account_id, entry.get("time"), entry.get("level"), entry.get("message"), entry.get("error"))
+                "INSERT INTO logs (machine_id, account_id, time, level, message, error, code, params) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (machine_id, account_id, entry.get("time"), entry.get("level"),
+                 translate_os_error(entry.get("message")), entry.get("error"),
+                 entry.get("code"), json.dumps(entry["params"]) if "params" in entry else None)
             )
         connection.execute("DELETE FROM logs WHERE time < ?", (cutoff,))
     connection.close()
@@ -552,7 +667,7 @@ def get_logs(machine_id: Optional[str] = None, level: Optional[str] = None, limi
              account_id: int = Depends(require_login)):
     # Panel: bu hesabın en yeni log satırları; makineye ve seviyeye göre filtrelenebilir.
     # Makinenin adı da gelir: hesaptan çıkarılmış makinenin eski logları da adıyla görünsün.
-    query = ("SELECT logs.machine_id, machines.name, logs.time, logs.level, logs.message, logs.error"
+    query = ("SELECT logs.machine_id, machines.name, logs.time, logs.level, logs.message, logs.error, logs.code, logs.params"
              " FROM logs LEFT JOIN machines ON machines.id = logs.machine_id WHERE logs.account_id = ?")
     params = [account_id]
     if machine_id:
@@ -568,8 +683,8 @@ def get_logs(machine_id: Optional[str] = None, level: Optional[str] = None, limi
     rows = connection.execute(query, params).fetchall()
     connection.close()
     return [{"machine_id": machine_id, "machine_name": name, "time": time, "level": level,
-             "message": message, "error": error}
-            for machine_id, name, time, level, message, error in rows]
+             "message": message, "error": error, "code": code, "params": json.loads(params) if params else {}}
+            for machine_id, name, time, level, message, error, code, params in rows]
 
 
 # ---------------- Geri yükleme ----------------
@@ -586,8 +701,8 @@ def find_job(machine_id, source, target, account_id):
     ).fetchone()
     connection.close()
     if row is None:
-        raise HTTPException(404, "job not found")
-    return row[0] or "local"
+        raise HTTPException(404, "job_not_found")
+    return row[0]
 
 
 def create_restore(job, kind, account_id, path=None):
@@ -615,10 +730,14 @@ def get_restore(request_id):
     ).fetchone()
     connection.close()
     if row is None:
-        raise HTTPException(404, "restore request not found")
+        raise HTTPException(404, "restore_request_not_found")
     keys = ("id", "machine_id", "target", "target_type", "kind", "path", "status", "files", "error")
     result = dict(zip(keys, row))
     result["files"] = json.loads(result["files"]) if result["files"] else None
+    try:
+        result["error"] = json.loads(result["error"]) if result["error"] else None
+    except ValueError:
+        pass   # eski biçim: düz yazı
     return result
 
 
@@ -641,7 +760,7 @@ def account_restore(request_id, account_id):
                              (r["machine_id"], account_id)).fetchone()
     connection.close()
     if row is None:
-        raise HTTPException(404, "restore request not found")
+        raise HTTPException(404, "restore_request_not_found")
     return r
 
 
@@ -667,12 +786,16 @@ def restore_status(request_id: int, account_id: int = Depends(require_login)):
 def restore_download(request_id: int, account_id: int = Depends(require_login)):
     r = account_restore(request_id, account_id)
     if r["kind"] != "file" or r["status"] != "ready":
-        raise HTTPException(409, "file is not ready")
+        raise HTTPException(409, "file_not_ready")
     name = r["path"].split("/")[-1]
 
     # Servisin gönderdiği dosyayı ver, gönderim bitince sil
     path = os.path.join(RESTORE_DIR, str(request_id))
     set_restore(request_id, "downloaded")
+    connection = connect()
+    with connection:
+        add_event(connection, account_id, r["machine_id"], "restore", params={"path": r["path"]})
+    connection.close()
     return FileResponse(path, filename=name, background=BackgroundTask(os.remove, path))
 
 
@@ -680,7 +803,7 @@ def restore_download(request_id: int, account_id: int = Depends(require_login)):
 def own_request(request_id, machine_id):
     # Servis sadece kendi makinesine ait isteğe cevap verebilir
     if get_restore(request_id)["machine_id"] != machine_id:
-        raise HTTPException(403, "restore request belongs to another machine")
+        raise HTTPException(403, "restore_request_other_machine")
 
 
 @app.get("/restore/pending")
@@ -720,7 +843,7 @@ async def restore_file_done(request_id: int, request: Request, machine_id: str =
 def restore_error(request_id: int, body: dict = Body(), machine_id: str = Depends(require_machine)):
     # Servis: isteği yerine getiremedi
     own_request(request_id, machine_id)
-    set_restore(request_id, "error", error=body.get("error"))
+    set_restore(request_id, "error", error=json.dumps(body.get("error"), ensure_ascii=False))   # kod + değerler
     return {"saved": True}
 
 
@@ -729,10 +852,10 @@ def restore_error(request_id: int, body: dict = Body(), machine_id: str = Depend
 # Gönderim bilgileri (SMTP) api klasöründeki smtp.json'dadır; dosya yoksa mail gönderilmez.
 # Her sorun bir kere açılır (problems tablosu): açılınca bir mail, düzelince bir mail.
 SMTP_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "smtp.json")
-OFFLINE_AFTER = timedelta(minutes=10)    # bu kadar süre haber gelmeyen makine "ulaşılamıyor"
-OFFLINE_CHECK_SECONDS = 60               # ulaşılamayan makineler kaç saniyede bir kontrol edilir
+OFFLINE_AFTER = timedelta(minutes=10)    # işin zamanından bu kadar sonra hâlâ haber yoksa "ulaşılamıyor"
+OFFLINE_CHECK_SECONDS = 60               # zamanı geçen işler kaç saniyede bir kontrol edilir
+DAYS = ["pzt", "sal", "car", "per", "cum", "cmt", "paz"]   # servisteki gün adlarıyla aynı
 NO_SUCCESS_DAYS = 3                      # bir iş bu kadar gündür hiç başarılı olmadıysa (seyrek işlerde aralığın 2 katı)
-DISK_ERROR = "not enough free space on target"   # servisin "en az X MB boş kalsın" kuralına takılınca yazdığı hata
 log = logging.getLogger("uvicorn.error")         # API'nin kendi log'u (api-service.err.log)
 
 # Mail türleri: renk (sorun: gri, olumlu: mavi), başlık, açıklama cümlesi, "Ne yapmalı?" önerisi.
@@ -741,7 +864,7 @@ MAIL_GRAY = "#4b5563"
 MAIL_BLUE = "#1d5fa8"
 MAIL_TYPES = {
     "offline": (MAIL_GRAY, "Makine ulaşılamıyor",
-                "{m} makinesinden 10 dakikadır haber alınamıyor.",
+                "{m} makinesinde bir yedeklemenin zamanı geldi ama makineden haber alınamıyor.",
                 "Makinenin açık ve internete bağlı olduğunu, yedekleme servisinin çalıştığını kontrol edin."),
     "offline_ok": (MAIL_BLUE, "Makine tekrar çevrimiçi",
                    "{m} makinesi tekrar bağlandı.", None),
@@ -771,55 +894,31 @@ MAIL_TYPES = {
     "removed": (MAIL_BLUE, "Makine hesaptan çıkarıldı",
                 "{m} makinesi hesabınızdan çıkarıldı. Bu makinenin işleri silindi.", None),
 }
-TARGET_LABELS = {"local": "Yerel", "pcloud": "pCloud", "gdrive": "Google Drive"}
 
-# Servisin İngilizce hata mesajlarının Türkçesi: (İngilizce başlangıç, Türkçe karşılığı).
-# Mesajın geri kalanı (dosya yolu, ayrıntı) olduğu gibi eklenir.
-ERROR_TEXTS = [
-    ("source folder not found", "Kaynak klasör bulunamadı"),
-    ("source is not a folder", "Kaynak bir klasör değil"),
-    ("source folder cannot be listed", "Kaynak klasörün içi okunamadı"),
-    ("source files cannot be read", "Kaynak dosyalar okunamadı"),
-    ("target folder cannot be created", "Hedef klasör oluşturulamadı"),
-    ("no write permission on target", "Hedefe yazma izni yok"),
-    ("Source changed during backup, will be retried", "Dosya yedekleme sırasında değişti, tekrar denenecek"),
-    ("Zip verification failed", "Zip doğrulaması başarısız"),
-    ("pCloud verification failed", "pCloud doğrulaması başarısız"),
-    ("Google Drive verification failed", "Google Drive doğrulaması başarısız"),
-    ("Verification failed", "Doğrulama başarısız"),
-    ("pcloud token file not found", "pCloud token dosyası bulunamadı"),
-    ("pcloud support is not ready (pcloud_storage.py or requests package missing)",
-     "pCloud desteği hazır değil (pcloud_storage.py ya da requests paketi eksik)"),
-    ("Google Drive token file not found (run 'python drive_storage.py' once)",
-     "Google Drive token dosyası bulunamadı (servis klasöründe bir kere 'python drive_storage.py' çalıştırılmalı)"),
-    ("Google Drive support is not ready (drive_storage.py or Google packages missing)",
-     "Google Drive desteği hazır değil (drive_storage.py ya da Google paketleri eksik)"),
-    ("Google Drive token is missing or invalid: run 'python drive_storage.py' once in the service folder",
-     "Google Drive token'ı eksik ya da geçersiz: servis klasöründe bir kere 'python drive_storage.py' çalıştırılmalı"),
-]
-# İşletim sisteminden gelen sık hatalar: [Errno numara] -> Türkçesi
+# İşletim sisteminden gelen sık hatalar İngilizce olabilir (Linux, İngilizce Windows): [Errno numara] -> Türkçesi.
+# Servisin kendi mesajları zaten Türkçe; Türkçe Windows'un hataları da Türkçe gelir.
 ERRNO_TEXTS = {2: "Dosya ya da klasör bulunamadı", 5: "Giriş/çıkış hatası", 13: "Erişim izni yok",
                28: "Diskte yer kalmadı", 30: "Disk salt okunur"}
-DISK_PATTERN = re.compile(r"not enough free space on target: need (\d+) MB \+ (\d+) MB reserve, free (\d+) MB")
 ERRNO_PATTERN = re.compile(r"\[Errno (\d+)\] [^:]*(: .*)?$")
 
 
-def turkish_error(text):
-    # Servisin hata mesajını Türkçeye çevirir; listede olmayan kısım olduğu gibi kalır
+def translate_os_error(text):
+    # İşletim sisteminin sık İngilizce hatalarını Türkçeye çevirir (log satırları ve mailler için)
     if not text:
         return text
-    match = DISK_PATTERN.search(text)
-    if match:
-        return ("Hedef diskte yeterli boş alan yok: %s MB gerekli, %s MB her zaman boş bırakılıyor, boş alan %s MB"
-                % match.groups())
-    for english, turkish in ERROR_TEXTS:
-        if text.startswith(english):
-            text = turkish + text[len(english):]
-            break
     match = ERRNO_PATTERN.search(text)
     if match and int(match.group(1)) in ERRNO_TEXTS:
         text = text[:match.start()] + ERRNO_TEXTS[int(match.group(1))] + (match.group(2) or "")
     return text
+
+
+def turkish_error(text):
+    # Maildeki "Sebep" satırı: işletim sistemi hataları çevrilir, ilk harf büyütülür
+    if not text:
+        return text
+    text = translate_os_error(text)
+    first = "İ" if text[0] == "i" else text[0].upper()
+    return first + text[1:]
 
 
 def format_duration(seconds):
@@ -884,7 +983,7 @@ def send_mail(to, kind, machine_name, details, on_error):
             with open(SMTP_PATH, encoding="utf-8") as f:
                 smtp = json.load(f)
         except (OSError, ValueError) as error:
-            log.warning("Mail not sent (smtp.json could not be read: %s): %s", error, kind)
+            log.warning("Mail gönderilmedi (smtp.json okunamadı: %s): %s", error, MAIL_TYPES[kind][1])
             on_error("smtp.json okunamadı: %s" % error)
             return
         subject, text, body = build_mail(kind, machine_name, details, smtp.get("panel_url"))
@@ -900,7 +999,7 @@ def send_mail(to, kind, machine_name, details, on_error):
                 server.login(smtp["username"], smtp["password"])
                 server.send_message(message)
         except (OSError, smtplib.SMTPException) as error:
-            log.warning("Mail could not be sent: %s: %s", subject, error)
+            log.warning("Mail gönderilemedi: %s: %s", subject, error)
             on_error(str(error))
     threading.Thread(target=worker, daemon=True).start()
 
@@ -918,21 +1017,31 @@ def notify(connection, account_id, machine_id, machine_name, kind, details=()):
             error_connection.execute(
                 "INSERT INTO logs (machine_id, account_id, time, level, message, error) VALUES (?, ?, ?, ?, ?, ?)",
                 (machine_id, account_id, datetime.now().isoformat(timespec="milliseconds"), "ERROR",
-                 "Mail gönderilemedi (%s): %s" % (title, error), None)
+                 translate_os_error("Mail gönderilemedi (%s): %s" % (title, error)), None)
             )
         error_connection.close()
 
     send_mail(row[0], kind, machine_name, list(details), mail_error)
 
 
-def open_problem(connection, account_id, machine_id, machine_name, kind, job, details):
-    # Sorun zaten açıksa hiçbir şey yapma (sorun başına tek mail)
+def add_event(connection, account_id, machine_id, kind, job=None, params=None, time=None):
+    # Genel bakıştaki olay akışına bir satır: cümle değil olayın türü ve değerleri (panel dil dosyasından yazar)
+    connection.execute(
+        "INSERT INTO events (account_id, machine_id, time, kind, job, params) VALUES (?, ?, ?, ?, ?, ?)",
+        (account_id, machine_id, time or datetime.now().isoformat(timespec="seconds"), kind, job, json.dumps(params or {}))
+    )
+
+
+def open_problem(connection, account_id, machine_id, machine_name, kind, job, details, params):
+    # Sorun zaten açıksa hiçbir şey yapma (sorun başına tek mail).
+    # details: mail için satırlar; params: panel için değerler (panel cümleyi dil dosyasından kurar)
     cursor = connection.execute(
-        "INSERT OR IGNORE INTO problems (machine_id, kind, job, opened_at) VALUES (?, ?, ?, ?)",
-        (machine_id, kind, job, datetime.now().isoformat(timespec="seconds"))
+        "INSERT OR IGNORE INTO problems (machine_id, kind, job, opened_at, params) VALUES (?, ?, ?, ?, ?)",
+        (machine_id, kind, job, datetime.now().isoformat(timespec="seconds"), json.dumps(params))
     )
     if cursor.rowcount:
         notify(connection, account_id, machine_id, machine_name, kind, details)
+        add_event(connection, account_id, machine_id, "problem", job, dict(params, problem=kind))
 
 
 def close_problem(connection, account_id, machine_id, machine_name, kind, job, details):
@@ -942,8 +1051,10 @@ def close_problem(connection, account_id, machine_id, machine_name, kind, job, d
     if row is None:
         return
     connection.execute("DELETE FROM problems WHERE machine_id = ? AND kind = ? AND job = ?", (machine_id, kind, job))
-    duration = format_duration((datetime.now() - datetime.fromisoformat(row[0])).total_seconds())
-    notify(connection, account_id, machine_id, machine_name, kind + "_ok", list(details) + [("Sorun süresi", duration, False)])
+    seconds = (datetime.now() - datetime.fromisoformat(row[0])).total_seconds()
+    notify(connection, account_id, machine_id, machine_name, kind + "_ok",
+           list(details) + [("Sorun süresi", format_duration(seconds), False)])
+    add_event(connection, account_id, machine_id, "resolved", job, {"problem": kind, "seconds": int(seconds)})
 
 
 def schedule_gap_days(schedule):
@@ -975,38 +1086,60 @@ def check_status(connection, machine_id, status):
     for job in status.get("jobs", []):
         key = job["source"] + " -> " + job["target"]
         current.append(key)
-        target_label = TARGET_LABELS.get(target_types.get((job["source"], job["target"])) or "local", "")
+        # Hedef türünün adı: dil dosyasından (target.<tür>.label)
+        target_type = target_types.get((job["source"], job["target"]))
+        target_label = TEXTS.get("target.%s.label" % target_type, "")
         job_rows = [("Kaynak", job["source"], True),
                     ("Hedef", job["target"] + (" (%s)" % target_label if target_label else ""), True)]
-        reason = [("Sebep", turkish_error(job["last_error"]), False)] if job.get("last_error") else []
+        # Hata servisten kod + değer olarak gelir: mail için cümleye çevrilir, panele kod olarak gider
+        reason = [("Sebep", turkish_error(error_text(job["last_error"])), False)] if job.get("last_error") else []
+        error = {"error": job["last_error"]} if job.get("last_error") else {}
         result = job.get("last_result")
         state = job.get("state")
+
+        # Çalışma geçmişi: başlayan ve biten her çalışma kaydedilir (Genel bakış)
+        connection.execute(
+            "INSERT OR IGNORE INTO job_health (machine_id, job, first_seen) VALUES (?, ?, ?)",
+            (machine_id, key, now.isoformat(timespec="seconds"))
+        )
+        last_started = connection.execute("SELECT last_started FROM job_health WHERE machine_id = ? AND job = ?",
+                                          (machine_id, key)).fetchone()[0]
+        if state == "running" and job.get("last_run") and job["last_run"] != last_started:
+            connection.execute("UPDATE job_health SET last_started = ? WHERE machine_id = ? AND job = ?",
+                               (job["last_run"], machine_id, key))
+            add_event(connection, account_id, machine_id, "run_started", key, time=job["last_run"])
+        if result and result.get("finished"):
+            cursor = connection.execute(
+                "INSERT OR IGNORE INTO runs (machine_id, job, started, finished, files, failed) VALUES (?, ?, ?, ?, ?, ?)",
+                (machine_id, key, job.get("last_run") or result["finished"], result["finished"], result["files"], result["failed"])
+            )
+            if cursor.rowcount and result["failed"] == 0:
+                add_event(connection, account_id, machine_id, "run_ok", key, {"files": result["files"]}, result["finished"])
+            elif cursor.rowcount and state != "waiting_retry":
+                add_event(connection, account_id, machine_id, "run_failed", key,
+                          {"files": result["files"], "failed": result["failed"]}, result["finished"])
 
         # A: tüm denemelerden sonra hatalı dosya kaldı
         if result and result["failed"] > 0 and state not in ("running", "waiting_retry"):
             open_problem(connection, account_id, machine_id, name, "job_failed", key,
                          job_rows + [("Sonuç", "%d dosyadan %d tanesi kopyalanamadı" % (result["files"], result["failed"]), False)]
-                         + reason)
+                         + reason, dict(error, files=result["files"], failed=result["failed"]))
         elif result and result["failed"] == 0:
             close_problem(connection, account_id, machine_id, name, "job_failed", key, job_rows)
 
         # C: iş başlayamıyor (kaynak/hedef erişilemiyor, token geçersiz)
         if state == "waiting_access":
-            open_problem(connection, account_id, machine_id, name, "no_access", key, job_rows + reason)
+            open_problem(connection, account_id, machine_id, name, "no_access", key, job_rows + reason, error)
         else:
             close_problem(connection, account_id, machine_id, name, "no_access", key, job_rows)
 
         # D: hedef diskte yer kalmadı
-        if DISK_ERROR in (job.get("last_error") or ""):
-            open_problem(connection, account_id, machine_id, name, "disk_full", key, job_rows + reason)
+        if isinstance(job.get("last_error"), dict) and job["last_error"].get("code") == "error.disk_full":
+            open_problem(connection, account_id, machine_id, name, "disk_full", key, job_rows + reason, error)
         else:
             close_problem(connection, account_id, machine_id, name, "disk_full", key, job_rows)
 
         # E: iş uzun süredir hiç başarılı olmadı
-        connection.execute(
-            "INSERT OR IGNORE INTO job_health (machine_id, job, first_seen) VALUES (?, ?, ?)",
-            (machine_id, key, now.isoformat(timespec="seconds"))
-        )
         first_seen, last_success, last_finished = connection.execute(
             "SELECT first_seen, last_success, last_finished FROM job_health WHERE machine_id = ? AND job = ?",
             (machine_id, key)
@@ -1020,7 +1153,7 @@ def check_status(connection, machine_id, status):
         limit = timedelta(days=NO_SUCCESS_DAYS if gap <= NO_SUCCESS_DAYS else 2 * gap)
         if now - datetime.fromisoformat(last_success or first_seen) > limit:
             open_problem(connection, account_id, machine_id, name, "no_success", key,
-                         [("Gün", limit.days, False)] + job_rows + reason)
+                         [("Gün", limit.days, False)] + job_rows + reason, {"days": limit.days})
 
     # Silinen işlerin sorunları ve kayıtları sessizce kaldırılır
     marks = ",".join("?" * len(current))
@@ -1030,20 +1163,55 @@ def check_status(connection, machine_id, status):
                        [machine_id] + current)
 
 
+def last_due_time(schedule, last_run, now):
+    # İşin en son ne zaman çalışması gerekiyordu (servisin zamanlama kuralıyla aynı). Bilinemiyorsa None.
+    if schedule.get("type") == "interval":
+        if last_run is None:
+            return None   # iş hiç çalışmamış: ne zaman çalışacağı bilinmiyor
+        due = last_run + timedelta(minutes=schedule.get("minutes", 0))
+        return due if due <= now else None
+    if schedule.get("type") in ("daily", "weekly"):
+        hour, minute = (int(x) for x in schedule.get("time", "00:00").split(":"))
+        for back in range(8):
+            day = now - timedelta(days=back)
+            if schedule["type"] == "weekly" and DAYS[day.weekday()] not in schedule.get("days", []):
+                continue
+            due = day.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            if due <= now:
+                return due
+    return None
+
+
 def check_offline():
-    # B: hesaba bağlı olup 10 dakikadır durum göndermeyen makineler
-    limit = (datetime.now() - OFFLINE_AFTER).isoformat(timespec="seconds")
+    # B: bir işin zamanı geldikten 10 dakika sonra makineden hâlâ hiç haber yoksa
+    # (işin zamanından beri tek bir durum bile gelmediyse) "ulaşılamıyor".
+    # Makine tekrar durum gönderince sorun kapanır (check_status) ve "tekrar çevrimiçi" maili gider.
+    now = datetime.now()
     connection = connect()
-    rows = connection.execute(
-        "SELECT machines.id, machines.account_id, machines.name, machine_status.updated_at FROM machines"
-        " JOIN machine_status ON machine_status.machine_id = machines.id"
-        " WHERE machines.account_id IS NOT NULL AND machine_status.updated_at < ?",
-        (limit,)
+    machines = connection.execute(
+        "SELECT machines.id, machines.account_id, machines.name, machine_status.updated_at, machine_status.status"
+        " FROM machines JOIN machine_status ON machine_status.machine_id = machines.id"
+        " WHERE machines.account_id IS NOT NULL"
     ).fetchall()
     with connection:
-        for machine_id, account_id, name, updated_at in rows:
-            last_seen = datetime.fromisoformat(updated_at).strftime("%d.%m.%Y %H:%M")
-            open_problem(connection, account_id, machine_id, name, "offline", "", [("Son haber", last_seen, False)])
+        for machine_id, account_id, name, updated_at, status in machines:
+            last_seen = datetime.fromisoformat(updated_at)
+            last_runs = {(job["source"], job["target"]): job.get("last_run")
+                         for job in json.loads(status).get("jobs", [])}
+            missed = []
+            for source, target, schedule in connection.execute(
+                    "SELECT source, target, schedule FROM jobs WHERE machine_id = ?", (machine_id,)).fetchall():
+                last_run = last_runs.get((source, target))
+                due = last_due_time(json.loads(schedule), datetime.fromisoformat(last_run) if last_run else None, now)
+                if due is not None and last_seen < due and now - due >= OFFLINE_AFTER:
+                    missed.append((due, source, target))
+            if missed:
+                due, source, target = min(missed)   # zamanı ilk geçen iş
+                open_problem(connection, account_id, machine_id, name, "offline", "", [
+                    ("Kaynak", source, True), ("Hedef", target, True),
+                    ("Yedekleme zamanı", due.strftime("%d.%m.%Y %H:%M"), False),
+                    ("Son haber", last_seen.strftime("%d.%m.%Y %H:%M"), False)],
+                    {"due": due.isoformat(timespec="minutes"), "last_seen": last_seen.isoformat(timespec="minutes")})
     connection.close()
 
 
@@ -1053,7 +1221,44 @@ def offline_loop():
         try:
             check_offline()
         except Exception:
-            log.exception("Offline check failed")
+            log.exception("Ulaşılamıyor kontrolü başarısız")
+
+
+# ---------------- Genel bakış ----------------
+@app.get("/overview")
+def overview(day: Optional[str] = None, account_id: int = Depends(require_login)):
+    # Panel: açık sorunlar, son 14 günün çalışmaları ve seçilen günün olayları (gün: YYYY-AA-GG, boşsa bugün).
+    # "now": API'nin saati; panel "son haber" ve zaman çizelgesini buna göre hesaplar.
+    now = datetime.now()
+    day = day or now.strftime("%Y-%m-%d")
+    own = "SELECT id FROM machines WHERE account_id = ?"
+    connection = connect()
+    problems = connection.execute(
+        "SELECT problems.machine_id, machines.name, problems.kind, problems.job, problems.opened_at, problems.params"
+        " FROM problems JOIN machines ON machines.id = problems.machine_id"
+        " WHERE machines.account_id = ? ORDER BY problems.opened_at", (account_id,)
+    ).fetchall()
+    since = min((now - timedelta(days=14)).strftime("%Y-%m-%dT00:00:00"), day + "T00:00:00")   # 14 gün ya da seçilen gün
+    runs = connection.execute(
+        "SELECT machine_id, job, started, finished, files, failed FROM runs"
+        " WHERE machine_id IN (%s) AND finished >= ? ORDER BY finished" % own, (account_id, since)
+    ).fetchall()
+    events = connection.execute(
+        "SELECT events.machine_id, machines.name, events.time, events.kind, events.job, events.params"
+        " FROM events LEFT JOIN machines ON machines.id = events.machine_id"
+        " WHERE events.account_id = ? AND events.time >= ? AND events.time < ? ORDER BY events.time DESC, events.id DESC",
+        (account_id, day + "T00:00:00", day + "T99")
+    ).fetchall()
+    connection.close()
+    return {
+        "now": now.isoformat(timespec="seconds"),
+        "problems": [{"machine_id": m, "machine_name": n, "kind": k, "job": j, "opened_at": o,
+                      "params": json.loads(p) if p else {}} for m, n, k, j, o, p in problems],
+        "runs": [{"machine_id": m, "job": j, "started": s, "finished": f, "files": fi, "failed": fa}
+                 for m, j, s, f, fi, fa in runs],
+        "events": [{"machine_id": m, "machine_name": n, "time": t, "kind": k, "job": j,
+                    "params": json.loads(p) if p else {}} for m, n, t, k, j, p in events],
+    }
 
 
 # ---------------- Ayarlar ----------------
@@ -1074,10 +1279,10 @@ def change_password(body: dict = Body(), session: Optional[str] = Cookie(None)):
     account_id = require_login(session)
     now = datetime.now()
     if PASSWORD_BLOCKED.get(account_id, now) > now:
-        raise HTTPException(429, "too many wrong attempts, try again later")
+        raise HTTPException(429, "too_many_attempts")
     current, new = body.get("current"), body.get("new")
     if not isinstance(current, str) or not isinstance(new, str):
-        raise HTTPException(400, "current and new password must be text")
+        raise HTTPException(400, "password_not_text")
     connection = connect()
     salt, iterations, stored_hash = connection.execute(
         "SELECT salt, iterations, hash FROM accounts WHERE id = ?", (account_id,)
@@ -1090,11 +1295,11 @@ def change_password(body: dict = Body(), session: Optional[str] = Cookie(None)):
             PASSWORD_BLOCKED[account_id] = now + LOGIN_BLOCK
             fails = []
         PASSWORD_FAILS[account_id] = fails
-        raise HTTPException(400, "current password is wrong")
+        raise HTTPException(400, "wrong_current_password")
     PASSWORD_FAILS.pop(account_id, None)   # mevcut şifre doğru: sayaç sıfırlanır
     if len(new) < PASSWORD_MIN_LENGTH:
         connection.close()
-        raise HTTPException(400, "new password is too short")
+        raise HTTPException(400, "new_password_too_short")
     new_salt = secrets.token_bytes(16)
     new_hash = hashlib.pbkdf2_hmac("sha256", new.encode("utf-8"), new_salt, PASSWORD_ITERATIONS).hex()
     with connection:
@@ -1111,10 +1316,10 @@ def set_email(body: dict = Body(), account_id: int = Depends(require_login)):
     # Panel: bildirim e-postası (boş bırakılırsa mail gönderilmez)
     email = body.get("email")
     if not isinstance(email, str):
-        raise HTTPException(400, "email must be text")
+        raise HTTPException(400, "email_not_text")
     email = email.strip()
     if email and "@" not in email:
-        raise HTTPException(400, "invalid email")
+        raise HTTPException(400, "invalid_email")
     connection = connect()
     with connection:
         connection.execute("UPDATE accounts SET email = ? WHERE id = ?", (email, account_id))

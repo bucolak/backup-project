@@ -1,11 +1,14 @@
-import json, webbrowser, requests
+import json, os, webbrowser, requests
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlencode, urlparse, parse_qs
 
 PORT = 65432
 REDIRECT_URI = f"http://localhost:{PORT}/"
 
-with open("pcloud_credentials.json", "r", encoding="utf-8") as f:
+# Bu dosya servis klasörünün targets/pcloud/ klasöründe; credential ve token dosyaları servis klasöründe durur
+SERVICE_DIR = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
+
+with open(os.path.join(SERVICE_DIR, "pcloud_credentials.json"), "r", encoding="utf-8") as f:
     app = json.load(f)
 
 result = {}
@@ -27,7 +30,7 @@ auth_url = "https://my.pcloud.com/oauth2/authorize?" + urlencode({
     "response_type": "code",
     "redirect_uri": REDIRECT_URI,
 })
-print("If the browser does not open, visit this address:")
+print("Tarayıcı açılmazsa bu adrese gidin:")
 print(auth_url)
 webbrowser.open(auth_url)
 
@@ -35,7 +38,7 @@ server = HTTPServer(("localhost", PORT), Handler)
 server.handle_request()
 
 if result.get("error") or not result.get("code"):
-    print("Login failed:", result.get("error"))
+    print("Giriş başarısız:", result.get("error"))
     exit()
 
 response = requests.get("https://" + result["hostname"] + "/oauth2_token", params={
@@ -46,9 +49,9 @@ response = requests.get("https://" + result["hostname"] + "/oauth2_token", param
 data = response.json()
 
 if data["result"] != 0:
-    print("Token error:", data.get("error"))
+    print("Token hatası:", data.get("error"))
 else:
-    with open("pcloud_token.json", "w", encoding="utf-8") as f:
+    with open(os.path.join(SERVICE_DIR, "pcloud_token.json"), "w", encoding="utf-8") as f:
         json.dump({"api": "https://" + result["hostname"],
                    "access_token": data["access_token"]}, f, indent=4)
-    print("Token saved to pcloud_token.json")
+    print("Token pcloud_token.json dosyasına kaydedildi")

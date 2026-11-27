@@ -3,6 +3,7 @@ import importlib
 import json
 import logging
 import os
+import platform
 import re
 import secrets
 import shutil
@@ -26,12 +27,12 @@ import win32serviceutil
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
-TARGETS_DIR = os.path.join(BASE_DIR, "targets")   # her hedef türü burada bir dosya: local.py, pcloud.py, gdrive.py ...
+TARGETS_DIR = os.path.join(BASE_DIR, "targets")   # her hedef türü burada kendi klasöründe: local/, pcloud/, gdrive/ ...
 API_CA_PATH = os.path.join(BASE_DIR, "api_ca.crt")   # API'nin sertifikasını onaylayan CA (make_cert.py'nin ca.crt'si)
 MACHINE_PATH = os.path.join(BASE_DIR, "machine.json")   # API'nin verdiği kimlik: id + gizli anahtar
 PAIRING_PATH = os.path.join(BASE_DIR, "pairing_code.txt")   # makine bir hesaba eklenene kadar eşleştirme kodu
 
-# targets/ ve hedeflerin kullandığı dosyalar (pcloud_storage.py, drive_storage.py) service.py'nin yanında;
+# targets/ klasörü service.py'nin yanında;
 # servis hangi klasörde çalışırsa çalışsın bulunabilsin
 sys.path.insert(0, BASE_DIR)
 STATE_PATH = os.path.join(BASE_DIR, "state.json")
@@ -42,7 +43,10 @@ WORKERS = 4
 CHUNK_SIZE = 1024 * 1024   # 1 MB
 DEFAULT_RETRY = {"count": 3, "delay": 60}   # 3 kez, 60 saniye arayla
 ACCESS_RECHECK = 60   # kaynak/hedef izin sorunu varsa kaç saniyede bir tekrar bakılacak
-API_URL = "https://127.0.0.1:8001"   # API aynı bilgisayarda çalışıyor
+# API'nin adresi servis klasöründeki server.json'da: {"api_url": "https://..."} (servis açılırken bir kez okunur)
+SERVER_PATH = os.path.join(BASE_DIR, "server.json")
+with open(SERVER_PATH, encoding="utf-8") as _f:
+    API_URL = json.load(_f)["api_url"]
 API_CHECK_SECONDS = 30                    # API'ye kaç saniyede bir sorulacak
 STATUS_REPORT_SECONDS = 5                 # durum (sonuçlar ve ilerleme) ve yeni loglar API'ye kaç saniyede bir gönderilecek
 PENDING_LOGS_MAX = 5000                   # API'ye gönderilmeyi bekleyen en fazla log satırı
@@ -84,15 +88,17 @@ else:
 
 
 class JsonFormatter(logging.Formatter):
+    """Log satırı: zaman, seviye, kod ve değerler (cümle yok; cümleyi panel API'deki dil dosyasından kurar)."""
     def format(self, record):
         entry = {
             "time": datetime.fromtimestamp(record.created).isoformat(timespec="milliseconds"),
             "level": record.levelname,
-            "message": record.getMessage()
+            "code": record.msg,
+            "params": getattr(record, "params", {})
         }
         if record.exc_info:
             entry["error"] = self.formatException(record.exc_info)
-        return json.dumps(entry, ensure_ascii=False)
+        return json.dumps(entry, ensure_ascii=False, default=str)
 
 
 class ApiLogHandler(logging.Handler):
@@ -157,9 +163,58 @@ class DailyJsonHandler(logging.Handler):
         super().close()
 
 
-log = logging.getLogger("BackupService")
-log.setLevel(logging.INFO)
-log.propagate = False
+_logger = logging.getLogger("BackupService")
+_logger.setLevel(logging.INFO)
+_logger.propagate = False
+
+
+class CodeLogger:
+    """Loga cümle değil kod + değerler yazılır: log.info("log.copy_cancelled", path=path).
+    Hem makinedeki log dosyasına hem API'ye bu gider; cümleyi panel dil dosyasından kurar.
+    (code'dan sonraki "/": değerlerden birinin adı da "code" olabilsin, örn. eşleştirme kodu)"""
+
+    def __init__(self, logger):
+        self.logger = logger
+
+    def info(self, code, /, **params):
+        self.logger.info(code, extra={"params": params})
+
+    def warning(self, code, /, **params):
+        self.logger.warning(code, extra={"params": params})
+
+    def error(self, code, /, **params):
+        self.logger.error(code, extra={"params": params})
+
+    def exception(self, code, /, **params):
+        self.logger.error(code, exc_info=True, extra={"params": params})
+
+
+log = CodeLogger(_logger)
+
+
+class ServiceError(Exception):
+    """Servisin kendi hataları: cümle değil kod + değerler (cümleyi API'deki dil dosyası kurar)."""
+
+    def __init__(self, code, /, **params):
+        super().__init__(code)
+        self.code = code
+        self.params = params
+
+
+def err(code, /, **params):
+    """Kontrol fonksiyonlarının (validate, check ...) döndürdüğü hata: {"code", "params"}."""
+    return {"code": code, "params": params}
+
+
+def error_info(error):
+    """Bir hatanın loga ve API'ye giden hali: {"code", "params"}.
+    Kendi hatalarımız (code + params taşıyan) olduğu gibi; işletim sistemi hatası errno'suyla
+    (dil dosyasında karşılığı varsa o yazılır); geri kalanlar hatanın kendi yazısıyla gider."""
+    if isinstance(getattr(error, "code", None), str) and isinstance(getattr(error, "params", None), dict):
+        return {"code": error.code, "params": error.params}
+    if isinstance(error, OSError) and error.errno:
+        return {"code": "error.os", "params": {"errno": error.errno, "path": error.filename, "text": str(error)}}
+    return {"code": "error.text", "params": {"text": str(error)}}
 
 settings = dict(DEFAULT_SETTINGS)
 log_settings = None    # şu an kullanılan (log klasörü, saklama günü)
@@ -178,11 +233,11 @@ def apply_log_settings():
 
     handler = DailyJsonHandler(folder, settings["log_retention_days"])
     handler.setFormatter(JsonFormatter())
-    for old in list(log.handlers):
+    for old in list(_logger.handlers):
         if isinstance(old, DailyJsonHandler):   # API'ye giden log kuyruğuna dokunma
-            log.removeHandler(old)
+            _logger.removeHandler(old)
             old.close()
-    log.addHandler(handler)
+    _logger.addHandler(handler)
     log_settings = wanted
 
 
@@ -191,7 +246,7 @@ apply_log_settings()   # config okunana kadar varsayılan ayarlarla logla
 # Log satırları dosyaya yazılırken bir kopyası da API'ye gönderilmek üzere biriktirilir
 api_log_handler = ApiLogHandler()
 api_log_handler.setFormatter(JsonFormatter())
-log.addHandler(api_log_handler)
+_logger.addHandler(api_log_handler)
 
 DAYS = ["pzt", "sal", "car", "per", "cum", "cmt", "paz"]
 SCHEDULE_TYPES = ["daily", "weekly", "interval"]
@@ -249,7 +304,7 @@ def register_machine():
                 machine = json.load(f)
         except (OSError, ValueError) as error:
             if not register_error:
-                log.error("machine.json could not be read: %s", error)
+                log.error("log.machine_file_unreadable", error=error_info(error))
                 register_error = True
         return
 
@@ -264,14 +319,14 @@ def register_machine():
             answer = json.loads(response.read().decode("utf-8"))
     except (OSError, ValueError) as error:
         if not register_error:
-            log.error("Could not register with API, will retry: %s", error)
+            log.error("log.register_failed", error=error_info(error))
             register_error = True
         return
 
     machine = {"id": answer["id"], "secret": answer["secret"]}
     write_json(MACHINE_PATH, machine)
     register_error = False
-    log.info("Registered with API, machine id: %s", machine["id"])
+    log.info("log.registered", id=machine["id"])
 
 
 def check_pairing():
@@ -298,13 +353,12 @@ def check_pairing():
     if code == shown_pair_code:
         return
     valid_until = datetime.fromisoformat(answer["pair_expires"]).astimezone().strftime("%Y-%m-%d %H:%M")
+    # Dosyada sadece kod ve geçerlilik zamanı (dilden bağımsız): ilk satır kod, ikinci satır son geçerlilik
     with open(PAIRING_PATH, "w", encoding="utf-8") as f:
-        f.write("Eşleştirme kodu: %s\n" % code)
-        f.write("Geçerlilik: %s'e kadar\n" % valid_until)
-        f.write("Panelde Makineler > Makine ekle bölümüne bu kodu girin.\n")
+        f.write(code + "\n")
+        f.write(valid_until + "\n")
     shown_pair_code = code
-    log.info("Pairing code: %s (valid until %s). Enter it in the panel to add this machine to an account.",
-             code, valid_until)
+    log.info("log.pair_code", code=code, valid_until=valid_until)
 
 
 def sync_from_api():
@@ -321,12 +375,12 @@ def sync_from_api():
             api_jobs = json.loads(response.read().decode("utf-8"))
     except (OSError, ValueError) as error:
         if not api_error:
-            log.error("API could not be reached, keeping current config: %s", error)
+            log.error("log.api_unreachable", error=error_info(error))
             api_error = True
         return
 
     if api_error:
-        log.info("API reachable again")
+        log.info("log.api_reachable")
         api_error = False
 
     try:
@@ -341,7 +395,7 @@ def sync_from_api():
 
     config["jobs"] = api_jobs   # sadece işler değişir, settings olduğu gibi kalır
     write_json(CONFIG_PATH, config)
-    log.info("Config updated from API: %d job(s)", len(api_jobs))
+    log.info("log.jobs_updated", count=len(api_jobs))
 
 
 def read_config():
@@ -374,7 +428,7 @@ def load_state():
     except FileNotFoundError:
         return
     except (OSError, ValueError) as error:
-        log.error("State file could not be read, starting without it: %s", error)
+        log.error("log.state_unreadable", error=error_info(error))
         return
 
     for text_key, entry in data.items():
@@ -400,7 +454,7 @@ def load_state():
                     "folder": retry.get("folder")
                 }
         except (TypeError, ValueError, KeyError, AttributeError):
-            log.error("Invalid entry in state file skipped: %s", text_key)
+            log.error("log.state_bad_entry", key=text_key)
 
 
 def save_state():
@@ -426,7 +480,7 @@ def save_state():
         try:
             write_json(STATE_PATH, data)
         except OSError as error:
-            log.error("State file could not be written: %s", error)
+            log.error("log.state_unwritable", error=error_info(error))
 
 
 def norm_path(path):
@@ -435,33 +489,33 @@ def norm_path(path):
 
 
 def validate_job(item):
-    """İş geçerliyse None, değilse hatanın açıklamasını döndürür."""
+    """İş geçerliyse None, değilse hata ({"code", "params"}) döndürür."""
     if not isinstance(item, dict):
-        return "job must be an object"
+        return err("error.job_not_object")
 
     for field in ("source", "target"):
         if not isinstance(item.get(field), str) or not item[field].strip():
-            return field + " is missing or empty"
+            return err("error.field_missing", field=field)
 
     # Hedef türü yazılmamışsa yerel klasör kabul edilir
-    target_type = item.get("target_type", "local")
+    target_type = item.get("target_type")
     if target_type not in available_target_types():
-        return "invalid target_type: %r (available: %s)" % (target_type, ", ".join(available_target_types()))
+        return err("error.invalid_target_type", value=repr(target_type), valid=", ".join(available_target_types()))
 
     # İşlem yazılmamışsa kopyalama kabul edilir
     mode = item.get("mode", "copy")
     if mode not in MODES:
-        return "invalid mode: %r (valid: %s)" % (mode, ", ".join(MODES))
+        return err("error.invalid_mode", value=repr(mode), valid=", ".join(MODES))
 
     # Sıkıştırma yazılmamışsa dosyalar olduğu gibi aktarılır
     compression = item.get("compression", "none")
     if compression not in COMPRESSIONS:
-        return "invalid compression: %r (valid: %s)" % (compression, ", ".join(COMPRESSIONS))
+        return err("error.invalid_compression", value=repr(compression), valid=", ".join(COMPRESSIONS))
 
     # Yedek türü yazılmamışsa tam yedek (full) kabul edilir
     backup_type = item.get("backup_type", "full")
     if backup_type not in BACKUP_TYPES:
-        return "invalid backup_type: %r (valid: %s)" % (backup_type, ", ".join(BACKUP_TYPES))
+        return err("error.invalid_backup_type", value=repr(backup_type), valid=", ".join(BACKUP_TYPES))
 
     # Hedefe özel kontroller hedefin kendi dosyasında (targets/<tür>.py içindeki validate)
     error = target_module(target_type).validate(item, helpers())
@@ -470,46 +524,46 @@ def validate_job(item):
 
     retry = item.get("retry", {})
     if not isinstance(retry, dict):
-        return "retry must be an object, e.g. {\"count\": 3, \"delay\": 60}"
+        return err("error.retry_not_object")
     for field in ("count", "delay"):
         value = retry.get(field, DEFAULT_RETRY[field])
         if not isinstance(value, int) or isinstance(value, bool) or value < 0:
-            return "invalid retry.%s: %r (must be 0 or a positive whole number)" % (field, value)
+            return err("error.invalid_retry", field=field, value=repr(value))
 
     schedule = item.get("schedule")
     if not isinstance(schedule, dict):
-        return "schedule is missing"
+        return err("error.schedule_missing")
 
     schedule_type = schedule.get("type")
     if schedule_type not in SCHEDULE_TYPES:
-        return "invalid schedule type: %r (valid: %s)" % (schedule_type, ", ".join(SCHEDULE_TYPES))
+        return err("error.invalid_schedule_type", value=repr(schedule_type), valid=", ".join(SCHEDULE_TYPES))
 
     if schedule_type in ("daily", "weekly"):
         if not isinstance(schedule.get("time"), str) or not TIME_RE.match(schedule["time"]):
-            return "invalid time: %r (must be HH:MM, e.g. 03:00)" % schedule.get("time")
+            return err("error.invalid_time", value=repr(schedule.get("time")))
 
     if schedule_type == "weekly":
         days = schedule.get("days")
         if not isinstance(days, list) or not days:
-            return "days is missing or empty"
+            return err("error.days_missing")
         bad_days = [day for day in days if day not in DAYS]
         if bad_days:
-            return "invalid days: %s (valid: %s)" % (bad_days, ", ".join(DAYS))
+            return err("error.invalid_days", value=str(bad_days), valid=", ".join(DAYS))
 
     if schedule_type == "interval":
         minutes = schedule.get("minutes")
         if not isinstance(minutes, int) or isinstance(minutes, bool) or minutes <= 0:
-            return "invalid minutes: %r (must be a positive whole number)" % minutes
+            return err("error.invalid_minutes", value=repr(minutes))
 
     return None
 
 
 def apply_settings(raw):
-    """config'teki "settings" bölümünü doğrular ve uygular. Hata mesajlarını döndürür."""
+    """config'teki "settings" bölümünü doğrular ve uygular. Hataları ({"code", "params"}) döndürür."""
     global history, min_free_bytes
     errors = []
     if not isinstance(raw, dict):
-        errors.append("settings must be an object, using defaults")
+        errors.append(err("error.settings_not_object"))
         raw = {}
 
     new = dict(DEFAULT_SETTINGS)
@@ -518,19 +572,19 @@ def apply_settings(raw):
     if isinstance(value, str) and value.strip():
         new["log_dir"] = value
     else:
-        errors.append("invalid settings.log_dir: %r, using default" % value)
+        errors.append(err("error.invalid_log_dir", value=repr(value)))
 
     rules = {
-        "log_retention_days": (0, "0 or a positive whole number"),
-        "history_max": (1, "a positive whole number"),
-        "min_free_mb": (0, "0 or a positive whole number")
+        "log_retention_days": (0, "rule.non_negative"),   # 0 ya da pozitif tam sayı
+        "history_max": (1, "rule.positive"),              # pozitif tam sayı
+        "min_free_mb": (0, "rule.non_negative")
     }
-    for name, (minimum, text) in rules.items():
+    for name, (minimum, rule) in rules.items():
         value = raw.get(name, new[name])
         if isinstance(value, int) and not isinstance(value, bool) and value >= minimum:
             new[name] = value
         else:
-            errors.append("invalid settings.%s: %r (must be %s), using default" % (name, value, text))
+            errors.append(err("error.invalid_setting", name=name, value=repr(value), rule=err(rule)))
 
     settings.update(new)
     min_free_bytes = settings["min_free_mb"] * 1024 * 1024
@@ -540,10 +594,10 @@ def apply_settings(raw):
     try:
         apply_log_settings()
     except OSError as error:
-        errors.append("log folder could not be opened: %s" % error)
+        errors.append(err("error.log_dir_failed", error=error_info(error)))
 
     for error in errors:
-        log.error("Config %s", error)
+        log.error("log.settings_error", error=error)
     return errors
 
 
@@ -555,8 +609,8 @@ def reload_config():
         mtime = os.stat(CONFIG_PATH).st_mtime_ns
     except OSError as error:
         if config_mtime != "missing":
-            log.error("Config file not found, keeping previous jobs: %s", error)
-            config_errors = ["Config file not found: %s" % error]
+            log.error("log.config_missing", error=error_info(error))
+            config_errors = [err("error.config_missing", error=error_info(error))]
             config_mtime = "missing"
         return
 
@@ -567,13 +621,13 @@ def reload_config():
     try:
         data = read_config()
     except (OSError, ValueError) as error:
-        log.error("Config could not be read, keeping previous jobs: %s", error)
-        config_errors = ["Config could not be read: %s" % error]
+        log.error("log.config_unreadable", error=error_info(error))
+        config_errors = [err("error.config_unreadable", error=error_info(error))]
         return
 
     if not isinstance(data, dict) or not isinstance(data.get("jobs"), list):
-        log.error("Config must contain a \"jobs\" list, keeping previous jobs")
-        config_errors = ["Config must contain a \"jobs\" list"]
+        log.error("log.config_no_jobs")
+        config_errors = [err("error.config_no_jobs")]
         return
 
     errors = apply_settings(data.get("settings", {}))
@@ -585,18 +639,18 @@ def reload_config():
         if error is None:
             key = (item["source"], item["target"])
             if key in keys:
-                error = "duplicate job (same source and target)"
+                error = err("error.duplicate_job")
             keys.add(key)
 
         if error:
-            log.error("Config job %d skipped: %s", number, error)
-            errors.append("Job %d skipped: %s" % (number, error))
+            log.error("log.job_skipped", number=number, error=error)
+            errors.append(err("error.job_skipped", number=number, error=error))
             continue
         valid_jobs.append(item)
 
     jobs = valid_jobs
     config_errors = errors
-    log.info("Config loaded: %d valid job(s), %d skipped", len(valid_jobs), len(data["jobs"]) - len(valid_jobs))
+    log.info("log.config_loaded", valid=len(valid_jobs), skipped=len(data["jobs"]) - len(valid_jobs))
 
 
 def get_retry(job):
@@ -629,7 +683,7 @@ def zip_one(path, zip_path, info):
             with zf.open(os.path.basename(path), "w", force_zip64=True) as dst:
                 while True:
                     if stopping.is_set():
-                        raise InterruptedError("Service is stopping")
+                        raise InterruptedError()   # servis duruyor
                     chunk = src.read(CHUNK_SIZE)
                     if not chunk:
                         break
@@ -667,17 +721,17 @@ def clear_readonly(path):
 
 
 def check_access(job):
-    """İş için gereken izinler varsa None, yoksa sorunun açıklamasını döndürür."""
+    """İş için gereken izinler varsa None, yoksa sorunu ({"code", "params"}) döndürür."""
     # Kaynak: klasör var mı, listelenebiliyor mu, içindeki bir dosya okunabiliyor mu
     try:
         with os.scandir(lp(job["source"])) as entries:
             sample = next((e for e in entries if e.is_file() and not e.name.endswith(TEMP_SUFFIX)), None)
     except FileNotFoundError:
-        return "source folder not found"
+        return err("error.source_not_found")
     except NotADirectoryError:
-        return "source is not a folder"
+        return err("error.source_not_folder")
     except OSError as error:
-        return "source folder cannot be listed: %s" % error
+        return err("error.source_unlistable", error=error_info(error))
 
     if sample is not None:
         try:
@@ -686,7 +740,7 @@ def check_access(job):
         except OSError as error:
             # Hata 32: dosya başka bir programda açık; bu bir izin sorunu değil
             if getattr(error, "winerror", None) != 32:
-                return "source files cannot be read (%s): %s" % (sample.name, error)
+                return err("error.source_unreadable", name=sample.name, error=error_info(error))
 
     # Hedef hazır mı (klasör yazılabilir mi, token var mı ...): hedefin kendi dosyasında
     return get_target(job).check()
@@ -706,9 +760,9 @@ def reserve_space(folder, need):
     with space_lock:
         free = shutil.disk_usage(path).free - reserved.get(disk, 0)
         if free < need + min_free_bytes:
-            raise IOError(
-                "not enough free space on target: need %d MB + %d MB reserve, free %d MB"
-                % (need // 1048576, min_free_bytes // 1048576, max(free, 0) // 1048576))
+            # API bu hatayı koduyla tanır (D: hedef disk dolu)
+            raise ServiceError("error.disk_full", need=need // 1048576, reserve=min_free_bytes // 1048576,
+                               free=max(free, 0) // 1048576)
         reserved[disk] = reserved.get(disk, 0) + need
     return disk, need
 
@@ -720,17 +774,19 @@ def release_space(reservation):
 
 
 def available_target_types():
-    """targets/ klasöründeki hedef türleri: local.py -> "local", pcloud.py -> "pcloud" ..."""
+    """targets/ klasöründeki hedef türleri: her tür kendi klasöründe, aynı adlı dosyasıyla
+    (targets/local/local.py -> "local", targets/pcloud/pcloud.py -> "pcloud" ...)."""
     try:
         names = os.listdir(TARGETS_DIR)
     except OSError:
         return []
-    return sorted(name[:-3] for name in names if name.endswith(".py") and not name.startswith("_"))
+    return sorted(name for name in names
+                  if not name.startswith("_") and os.path.isfile(os.path.join(TARGETS_DIR, name, name + ".py")))
 
 
 def target_module(target_type):
-    """Hedef türünün dosyasını yükler: "pcloud" -> targets/pcloud.py"""
-    return importlib.import_module("targets." + target_type)
+    """Hedef türünün dosyasını yükler: "pcloud" -> targets/pcloud/pcloud.py"""
+    return importlib.import_module("targets.%s.%s" % (target_type, target_type))
 
 
 _helpers = None
@@ -743,13 +799,14 @@ def helpers():
         _helpers = SimpleNamespace(
             BASE_DIR=BASE_DIR, CHUNK_SIZE=CHUNK_SIZE, TEMP_SUFFIX=TEMP_SUFFIX, stopping=stopping,
             lp=lp, norm_path=norm_path, calculate_hash=calculate_hash, clear_readonly=clear_readonly,
-            reserve_space=reserve_space, release_space=release_space, list_files=list_files)
+            reserve_space=reserve_space, release_space=release_space, list_files=list_files,
+            ServiceError=ServiceError, err=err, error_info=error_info)
     return _helpers
 
 
 def get_target(job):
     """İşin hedefi: config'teki target_type'a göre targets/ klasöründeki dosyadan."""
-    return target_module(job.get("target_type", "local")).Target(job, helpers())
+    return target_module(job["target_type"]).Target(job, helpers())
 
 
 def backup_rel_path(job, path, folder, zipped):
@@ -802,7 +859,7 @@ def save_file(job, target, path, folder, info, source_info):
             info["status"] = "zipping"
             source_sha256 = zip_one(path, temp_zip, info)
             if source_sha256 != zip_content_hash(temp_zip):
-                raise IOError("Zip verification failed: " + path)
+                raise ServiceError("error.zip_verify_failed", path=path)
             os.utime(lp(temp_zip), ns=(source_info.st_atime_ns, source_info.st_mtime_ns))   # zip'in tarihi = kaynağın tarihi
             upload_path = temp_zip
 
@@ -818,9 +875,9 @@ def save_file(job, target, path, folder, info, source_info):
     # Kaynak yedekleme sırasında değiştiyse kopya karışık olabilir: hata say, yeniden deneme kuralı tekrar dener
     after = os.stat(lp(path))
     if (after.st_size, after.st_mtime_ns) != (source_info.st_size, source_info.st_mtime_ns):
-        raise IOError("Source changed during backup, will be retried: " + path)
+        raise ServiceError("error.file_changed", path=path)
 
-    log.info("%s and verified: %s -> %s", "Zipped" if zipped else "Saved", path, info["target"])
+    log.info("log.zipped" if zipped else "log.saved", path=path, target=info["target"])
     return zipped, source_sha256, stored_hash
 
 
@@ -891,7 +948,7 @@ def run_file(path, job, key, folder, verify_record=None):
             saved_folder, zipped, source_sha256, stored_hash = verify_record[2:6]
             info["copied"] = source_info.st_size
             info["target"] = target.display(backup_rel_path(job, path, saved_folder, zipped))
-            log.info("Already backed up in %s, verified (not copied): %s", saved_folder, path)
+            log.info("log.already_backed_up", folder=saved_folder, path=path)
         else:
             saved_folder = folder
             zipped, source_sha256, stored_hash = save_file(job, target, path, folder, info, source_info)
@@ -906,17 +963,17 @@ def run_file(path, job, key, folder, verify_record=None):
         if job.get("mode", "copy") == "move":
             clear_readonly(path)   # salt okunur dosya Windows'ta silinemez
             os.remove(lp(path))
-            log.info("Source deleted (move): %s", path)
+            log.info("log.source_deleted", path=path)
         info["status"] = "done"
     except InterruptedError:
         info["status"] = "cancelled"
-        info["error"] = "Service is stopping"
-        log.info("Copy cancelled: %s", path)
+        info["error"] = err("error.service_stopping")
+        log.info("log.copy_cancelled", path=path)
     except Exception as error:
         failed = True
         info["status"] = "error"
-        info["error"] = str(error)
-        log.exception("Copy failed: %s", path)
+        info["error"] = error_info(error)
+        log.exception("log.copy_failed", path=path)
     finally:
         info["end"] = now_text()
         with running_lock:
@@ -960,15 +1017,13 @@ def run_file(path, job, key, folder, verify_record=None):
             save_state()   # yeni yeniden deneme (ya da silinen kayıt) servis yeniden başlasa da kaybolmasın
             failed_count = len(state["failed_paths"])
             if failed_count == 0:
-                log.info("Job finished: %s -> %s (all files copied)", job["source"], job["target"])
+                log.info("log.job_done", source=job["source"], target=job["target"])
             elif retry:
                 total = get_retry(job)["count"]
-                log.warning("Job finished with %d failed file(s): %s -> %s, retry %d/%d in %d s",
-                            failed_count, job["source"], job["target"],
-                            total - retry["left"], total, get_retry(job)["delay"])
+                log.warning("log.job_retry_scheduled", failed=failed_count, source=job["source"], target=job["target"],
+                            attempt=total - retry["left"], total=total, delay=get_retry(job)["delay"])
             else:
-                log.error("Job failed: %d file(s) could not be copied, no retries left: %s -> %s",
-                          failed_count, job["source"], job["target"])
+                log.error("log.job_failed", failed=failed_count, source=job["source"], target=job["target"])
 
 
 def build_status():
@@ -1006,6 +1061,7 @@ def build_status():
 
         data = {
             "updated": now_text(),
+            "os": platform.system(),   # "Windows" / "Linux": panelde makinenin yanında görünür
             "config_errors": list(config_errors),
             "jobs": job_list,
             "active": [dict(info) for info in active.values()]
@@ -1067,11 +1123,11 @@ def handle_restores():
         base = "/restore/requests/%d" % r["id"]
         try:
             # Hedef türü ne olursa olsun aynı akış: listeyi ya da dosyayı hedeften al, API'ye gönder
-            target = get_target({"target": r["target"], "target_type": r.get("target_type") or "local"})
+            target = get_target({"target": r["target"], "target_type": r["target_type"]})
             if r["kind"] == "list":
                 files = target.list()
                 api_post(base + "/list", json.dumps(files, ensure_ascii=False).encode("utf-8"))
-                log.info("Restore: file list sent: %s (%d files)", r["target"], len(files))
+                log.info("log.restore_list_sent", target=r["target"], count=len(files))
             else:
                 # Dosyayı geçici dosyaya al, API'ye gönder, geçici dosyayı sil
                 temp = os.path.join(tempfile.gettempdir(), "bksvc-restore-" + secrets.token_hex(4) + TEMP_SUFFIX)
@@ -1082,11 +1138,11 @@ def handle_restores():
                 finally:
                     if os.path.exists(lp(temp)):
                         os.remove(lp(temp))
-                log.info("Restore: file sent: %s", target.display(r["path"]))
+                log.info("log.restore_file_sent", target=target.display(r["path"]))
         except Exception as error:
-            log.exception("Restore request %d failed", r["id"])
+            log.exception("log.restore_failed", id=r["id"])
             try:
-                api_post(base + "/error", json.dumps({"error": str(error)}).encode("utf-8"))
+                api_post(base + "/error", json.dumps({"error": error_info(error)}, ensure_ascii=False, default=str).encode("utf-8"))
             except OSError:
                 pass
 
@@ -1121,7 +1177,7 @@ def load_history():
     except FileNotFoundError:
         return
     except (OSError, ValueError) as error:
-        log.error("History file could not be read, starting without it: %s", error)
+        log.error("log.history_unreadable", error=error_info(error))
         return
     if isinstance(data, list):
         history.extend(data)
@@ -1145,15 +1201,15 @@ def write_history():
 
 class BackupService(win32serviceutil.ServiceFramework):
     _svc_name_ = "BackupService"
-    _svc_display_name_ = "Backup Service"
-    _svc_description_ = "Backup project service"
+    _svc_display_name_ = "Yedekleme Servisi"
+    _svc_description_ = "Yedekleme projesinin servisi"
 
     def __init__(self, args):
         super().__init__(args)
         self.stop_event = win32event.CreateEvent(None, 0, 0, None)
 
     def SvcStop(self):
-        log.info("Service stopping")
+        log.info("log.service_stopping")
         self.ReportServiceStatus(win32service.SERVICE_STOP_PENDING)
         stopping.set()
         win32event.SetEvent(self.stop_event)
@@ -1161,7 +1217,7 @@ class BackupService(win32serviceutil.ServiceFramework):
     def SvcDoRun(self):
         global last_api_check, last_status_report
         reload_config()   # önce ayarları oku: loglar doğru klasöre gitsin
-        log.info("Service started")
+        log.info("log.service_started")
         load_state()
         load_history()
         pool = ThreadPoolExecutor(WORKERS)
@@ -1209,14 +1265,13 @@ class BackupService(win32serviceutil.ServiceFramework):
                         error = check_access(job)
                         if error:
                             if not problem or problem["error"] != error:
-                                log.error("Access problem, job waiting: %s -> %s: %s",
-                                          job["source"], job["target"], error)
+                                log.error("log.access_problem", source=job["source"], target=job["target"], error=error)
                             with running_lock:
                                 access_problems[key] = {"error": error, "next_check": time.time() + ACCESS_RECHECK}
                             continue
 
                         if problem:
-                            log.info("Access OK again: %s -> %s", job["source"], job["target"])
+                            log.info("log.access_restored", source=job["source"], target=job["target"])
                             with running_lock:
                                 del access_problems[key]
 
@@ -1227,8 +1282,8 @@ class BackupService(win32serviceutil.ServiceFramework):
                                 last_runs[key] = now
                             last_schedules[key] = job["schedule"]
                             save_state()
-                            log.info("Job started (%s): %s -> %s", job.get("backup_type", "full"),
-                                     job["source"], job["target"])
+                            log.info("log.job_started", backup_type=job.get("backup_type", "full"),
+                                     source=job["source"], target=job["target"])
                             folder = now.strftime(FOLDER_FORMAT)   # bu çalışmanın hedefteki tarih klasörü
                             paths = list_files(job["source"])
                             verify = {}
@@ -1242,17 +1297,16 @@ class BackupService(win32serviceutil.ServiceFramework):
                                 if job.get("mode", "copy") == "move":
                                     # Taşı: yedeklenmiş olanlar kopyalanmaz; o klasördeki kopya doğrulanıp kaynaktan silinir
                                     verify = done
-                                    log.info("Incremental: %d of %d file(s) already backed up (will be verified, not copied)",
-                                             len(done), len(paths))
+                                    log.info("log.incremental_verify", done=len(done), total=len(paths))
                                 else:
                                     # Kopyala: yedeklenmiş olanlar atlanır
-                                    log.info("Incremental: %d of %d file(s) are new or changed", len(paths) - len(done), len(paths))
+                                    log.info("log.incremental_new", new=len(paths) - len(done), total=len(paths))
                                     paths = [p for p in paths if p not in done]
                             if not paths:
-                                log.info("Job finished: %s -> %s (no files to copy, no folder created)", job["source"], job["target"])
+                                log.info("log.job_nothing_to_copy", source=job["source"], target=job["target"])
                                 continue
                             if len(paths) > len(verify):   # klasör sadece en az bir dosya kopyalanacaksa oluşur
-                                log.info("Backup folder for this run: %s", folder)
+                                log.info("log.job_folder", folder=folder)
                             start_job(pool, job, key, paths, get_retry(job)["count"], folder, verify)
 
                         else:
@@ -1261,13 +1315,12 @@ class BackupService(win32serviceutil.ServiceFramework):
                             with running_lock:
                                 retry = retries[key]
                                 retry["started"] = True
-                            log.info("Retrying %d file(s): %s -> %s",
-                                     len(retry["paths"]), job["source"], job["target"])
+                            log.info("log.job_retrying", count=len(retry["paths"]), source=job["source"], target=job["target"])
                             start_job(pool, job, key, retry["paths"], retry["left"],
                                       retry.get("folder") or now.strftime(FOLDER_FORMAT))
 
                     except Exception:
-                        log.exception("Job failed: %s -> %s", job["source"], job["target"])
+                        log.exception("log.job_error", source=job["source"], target=job["target"])
                         continue
 
                 status = build_status()
@@ -1282,7 +1335,7 @@ class BackupService(win32serviceutil.ServiceFramework):
                 if win32event.WaitForSingleObject(self.stop_event, 1000) == win32event.WAIT_OBJECT_0:
                     break
         except Exception:
-            log.exception("Service stopped because of an error")
+            log.exception("log.service_crashed")
             raise
         finally:
             # Çalışan thread'lere dur de, sırada bekleyenleri hiç başlatma, bitmelerini bekle
@@ -1291,7 +1344,7 @@ class BackupService(win32serviceutil.ServiceFramework):
             write_status(build_status())
             write_history()
 
-        log.info("Service stopped")
+        log.info("log.service_stopped")
 
 
 if __name__ == "__main__":

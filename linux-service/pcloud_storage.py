@@ -15,7 +15,7 @@ class PCloudStorage:
         response = requests.get(url, params=params, headers=self.headers)
         data = response.json()
         if data["result"] != 0:
-            raise RuntimeError("pCloud error: " + str(data.get("error")))
+            raise RuntimeError("pCloud hatası: " + str(data.get("error")))
         return data
 
     def get_or_create_folder(self, name, parent_id):
@@ -40,7 +40,7 @@ class PCloudStorage:
             speed = done_mb / (now - start) if now > start else 0
             print(f"  {file_name}: {done_mb:.1f}/{total_mb:.1f} MB ({percent}%) {speed:.2f} MB/s", flush=True)
 
-        print(f"Uploading to pCloud: {file_name} ({total_mb:.1f} MB)", flush=True)
+        print(f"pCloud'a yükleniyor: {file_name} ({total_mb:.1f} MB)", flush=True)
         with open(temp_path, "rb") as f:
             encoder = MultipartEncoder(fields={"file": (file_name, f)})
             monitor = MultipartEncoderMonitor(encoder, on_progress)
@@ -53,14 +53,14 @@ class PCloudStorage:
 
         data = response.json()
         if data["result"] != 0:
-            raise RuntimeError("pCloud error: " + str(data.get("error")))
-        print(f"Done: {file_name} in {time.time() - start:.1f} s", flush=True)
+            raise RuntimeError("pCloud hatası: " + str(data.get("error")))
+        print(f"Bitti: {file_name}, {time.time() - start:.1f} sn", flush=True)
         return data   # pCloud'un cevabı: yüklenen dosyanın bilgileri ve hash'leri (checksums)
 
     def save(self, temp_path, goreli_yol, progress=None):
         parts = goreli_yol.split("/")
         if any(p in ("", ".", "..") for p in parts):
-            raise ValueError("Invalid file path")
+            raise ValueError("Geçersiz dosya yolu")
 
         parent_id = self.root_id
         for folder_name in parts[:-1]:

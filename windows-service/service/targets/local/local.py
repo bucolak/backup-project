@@ -23,9 +23,9 @@ from datetime import datetime
 def validate(item, svc):
     source, target = svc.norm_path(item["source"]), svc.norm_path(item["target"])
     if source == target:
-        return "source and target cannot be the same folder"
+        return svc.err("target.local.same_folder")
     if (target + os.sep).startswith(source + os.sep):
-        return "target cannot be inside source (backups would be copied again and again)"
+        return svc.err("target.local.target_inside")
     return None
 
 
@@ -69,11 +69,11 @@ class Target:
         try:
             os.makedirs(self.svc.lp(self.root), exist_ok=True)
         except OSError as error:
-            return "target folder cannot be created: %s" % error
+            return self.svc.err("target.local.mkdir_failed", error=self.svc.error_info(error))
         try:
             probe_target(self.root, self.svc)
         except OSError as error:
-            return "no write permission on target: %s" % error
+            return self.svc.err("target.local.not_writable", error=self.svc.error_info(error))
         return None
 
     def save(self, src, rel, info):
@@ -98,7 +98,7 @@ class Target:
             with open(lp(src), "rb") as f_src, open(lp(temp_path), "wb") as f_dst:
                 while True:
                     if svc.stopping.is_set():
-                        raise InterruptedError("Service is stopping")
+                        raise InterruptedError()   # servis duruyor
                     chunk = f_src.read(svc.CHUNK_SIZE)
                     if not chunk:
                         break
@@ -116,7 +116,7 @@ class Target:
             info["status"] = "verifying"
             # Doğrulama: geçici dosyayı diskten tekrar oku, hash'ini karşılaştır
             if svc.calculate_hash(temp_path) != sha256.hexdigest():
-                raise IOError("Verification failed: " + target_path)
+                raise svc.ServiceError("target.local.verify_failed", path=target_path)
 
             # Doğrulandı: hedefteki eski kopya salt okunursa önce bu özelliği kaldır,
             # sonra geçici dosyayı tek adımda hedefin yerine koy

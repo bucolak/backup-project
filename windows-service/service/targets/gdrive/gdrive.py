@@ -17,7 +17,7 @@ def folder_parts(target):
 def validate(item, svc):
     parts = folder_parts(item["target"])
     if not parts or any(part in (".", "..") for part in parts):
-        return "invalid gdrive folder: %r" % item["target"]
+        return svc.err("target.gdrive.invalid_folder", value=repr(item["target"]))
     return None
 
 
@@ -25,13 +25,13 @@ class Target:
     def __init__(self, job, svc):
         self.svc = svc
         self.parts = folder_parts(job["target"])
-        self.token_path = os.path.join(svc.BASE_DIR, "token.json")              # python drive_storage.py ile bir kez oluşturulur
+        self.token_path = os.path.join(svc.BASE_DIR, "token.json")              # python targets/gdrive/drive_storage.py ile bir kez oluşturulur
         self.credentials_path = os.path.join(svc.BASE_DIR, "credentials.json")  # Google Cloud'dan indirilen OAuth dosyası
         self._storage = None
 
     def storage(self):
         if self._storage is None:
-            from drive_storage import DriveStorage
+            from .drive_storage import DriveStorage
             self._storage = DriveStorage(self.parts[0], self.token_path, self.credentials_path)
         return self._storage
 
@@ -51,11 +51,11 @@ class Target:
     def check(self):
         # Google Drive için yerel hedef klasörü yok; token ve drive_storage.py hazır mı ona bakılır
         if not os.path.exists(self.token_path):
-            return "Google Drive token file not found (run 'python drive_storage.py' once): %s" % self.token_path
+            return self.svc.err("target.gdrive.token_missing", path=self.token_path)
         try:
-            import drive_storage  # noqa: F401
+            from . import drive_storage  # noqa: F401
         except ImportError as error:
-            return "Google Drive support is not ready (drive_storage.py or Google packages missing): %s" % error
+            return self.svc.err("target.gdrive.not_ready", error=self.svc.error_info(error))
         return None
 
     def save(self, src, rel, info):
@@ -79,7 +79,7 @@ class Target:
         # Doğrulama: Drive'ın aldığı dosya için hesapladığı md5, bizimkiyle aynı mı?
         info["status"] = "verifying"
         if result.get("md5Checksum", "").lower() != md5.hexdigest():
-            raise IOError("Google Drive verification failed: " + self.display(rel))
+            raise svc.ServiceError("target.gdrive.verify_failed", target=self.display(rel))
         return sha256.hexdigest(), md5.hexdigest()
 
     def verify(self, rel, stored_hash):
@@ -127,7 +127,7 @@ class Target:
 
         file_id = self.find(self.parts[1:] + rel.split("/"))
         if not file_id:
-            raise FileNotFoundError("not found on Google Drive: " + rel)
+            raise self.svc.ServiceError("target.gdrive.not_found", path=rel)
         with open(self.svc.lp(dest), "wb") as f:
             downloader = MediaIoBaseDownload(f, self.storage().service.files().get_media(fileId=file_id),
                                              chunksize=self.svc.CHUNK_SIZE)

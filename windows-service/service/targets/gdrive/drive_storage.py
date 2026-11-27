@@ -11,6 +11,24 @@ SCOPES = ["https://www.googleapis.com/auth/drive.file"]
 FOLDER_MIME = "application/vnd.google-apps.folder"
 
 
+# Hatalar cümle değil kod + değer taşır (servis bunları API'ye böyle gönderir; cümleyi dil dosyası kurar)
+class TokenError(RuntimeError):
+    """Token yok ya da geçersiz: servis klasöründe bir kere 'python targets/gdrive/drive_storage.py' çalıştırılmalı."""
+    code = "target.gdrive.token_invalid"
+
+    def __init__(self):
+        super().__init__(self.code)
+        self.params = {}
+
+
+class InvalidPathError(ValueError):
+    code = "target.gdrive.invalid_path"
+
+    def __init__(self, path):
+        super().__init__(path)
+        self.params = {"path": path}
+
+
 def get_credentials(token_file="token.json", credentials_file="credentials.json", interactive=False):
     creds = None
     if os.path.exists(token_file):
@@ -20,12 +38,12 @@ def get_credentials(token_file="token.json", credentials_file="credentials.json"
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
         elif interactive:
-            # Sadece elle çalıştırılınca (python drive_storage.py): tarayıcıda Google hesabıyla izin verilir
+            # Sadece elle çalıştırılınca (python targets/gdrive/drive_storage.py): tarayıcıda Google hesabıyla izin verilir
             flow = InstalledAppFlow.from_client_secrets_file(credentials_file, SCOPES)
             creds = flow.run_local_server(port=0)
         else:
             # Servis tarayıcı açamaz: token yoksa ya da geçersizse hata ver
-            raise RuntimeError("Google Drive token is missing or invalid: run 'python drive_storage.py' once in the service folder")
+            raise TokenError()
         with open(token_file, "w", encoding="utf-8") as f:
             f.write(creds.to_json())
 
@@ -62,7 +80,7 @@ class DriveStorage:
     def save(self, temp_path, goreli_yol):
         parts = goreli_yol.split("/")
         if any(p in ("", ".", "..") for p in parts):
-            raise ValueError("Invalid file path")
+            raise InvalidPathError(goreli_yol)
 
         parent_id = self.root_id
         for folder_name in parts[:-1]:
@@ -81,8 +99,9 @@ class DriveStorage:
 
 
 if __name__ == "__main__":
-    # Bir kez elle çalıştırılır: tarayıcıda Google hesabıyla izin verilir, token.json bu klasöre yazılır
-    folder = os.path.dirname(os.path.abspath(__file__))
+    # Bir kez elle çalıştırılır: tarayıcıda Google hesabıyla izin verilir, token.json servis klasörüne yazılır
+    # (bu dosya servis klasörünün targets/gdrive/ klasöründe; servis token'ı servis klasöründe arar)
+    folder = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
     get_credentials(os.path.join(folder, "token.json"), os.path.join(folder, "credentials.json"), interactive=True)
-    print("token.json created in", folder)
+    print("token.json oluşturuldu:", folder)
     sys.exit(0)

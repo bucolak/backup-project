@@ -25,7 +25,7 @@ def get_credentials(token_file="token.json", credentials_file="credentials.json"
             creds = flow.run_local_server(port=0)
         else:
             # Servis tarayıcı açamaz: token yoksa ya da geçersizse hata ver
-            raise RuntimeError("Google Drive token is missing or invalid: run 'python drive_storage.py' once in the service folder")
+            raise RuntimeError("Google Drive token'ı eksik ya da geçersiz: servis klasöründe bir kere 'python drive_storage.py' çalıştırılmalı")
         with open(token_file, "w", encoding="utf-8") as f:
             f.write(creds.to_json())
 
@@ -62,7 +62,7 @@ class DriveStorage:
     def save(self, temp_path, goreli_yol):
         parts = goreli_yol.split("/")
         if any(p in ("", ".", "..") for p in parts):
-            raise ValueError("Invalid file path")
+            raise ValueError("Geçersiz dosya yolu")
 
         parent_id = self.root_id
         for folder_name in parts[:-1]:
@@ -84,5 +84,5 @@ if __name__ == "__main__":
     # Bir kez elle çalıştırılır: tarayıcıda Google hesabıyla izin verilir, token.json bu klasöre yazılır
     folder = os.path.dirname(os.path.abspath(__file__))
     get_credentials(os.path.join(folder, "token.json"), os.path.join(folder, "credentials.json"), interactive=True)
-    print("token.json created in", folder)
+    print("token.json oluşturuldu:", folder)
     sys.exit(0)

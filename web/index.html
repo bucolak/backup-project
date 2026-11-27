@@ -1,0 +1,290 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title></title>
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+<form class="box login" id="login-view" hidden>
+  <div class="login-brand"><svg width="22" height="22" viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3a7 7 0 1 1-6.6 4.7" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/><path d="M2 3.5v4.5h4.5" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg><span data-t="app.name"></span></div>
+  <div>
+    <h1 data-t="login.title"></h1>
+    <p class="hint" data-t="login.desc"></p>
+  </div>
+  <div class="field">
+    <label for="login-user" data-t="login.username"></label>
+    <input type="text" id="login-user" autocomplete="username" spellcheck="false">
+  </div>
+  <div class="field">
+    <label for="login-pass" data-t="login.password"></label>
+    <input type="password" id="login-pass" autocomplete="current-password">
+  </div>
+  <p class="error" id="login-error" role="alert" hidden></p>
+  <button class="btn primary" type="submit" data-t="login.submit"></button>
+</form>
+
+<div id="app" hidden>
+  <header class="band">
+    <div class="band-in">
+      <div class="topbar">
+        <div class="brand"><svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3a7 7 0 1 1-6.6 4.7" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/><path d="M2 3.5v4.5h4.5" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg><span data-t="app.name"></span></div>
+        <nav class="tabs" role="tablist">
+          <button class="tab" type="button" role="tab" id="tab-overview" aria-selected="true" data-t="tab.overview"></button>
+          <button class="tab" type="button" role="tab" id="tab-jobs" aria-selected="false" data-t="tab.jobs"></button>
+          <button class="tab" type="button" role="tab" id="tab-logs" aria-selected="false" data-t="tab.logs"></button>
+          <button class="tab" type="button" role="tab" id="tab-restore" aria-selected="false" data-t="tab.restore"></button>
+          <button class="tab" type="button" role="tab" id="tab-machines" aria-selected="false" data-t="tab.machines"></button>
+          <button class="tab" type="button" role="tab" id="tab-settings" aria-selected="false" data-t="tab.settings"></button>
+        </nav>
+        <div class="user"><span id="user-name"></span><button class="link-btn" type="button" id="logout-btn" data-t="app.logout"></button></div>
+      </div>
+      <div class="hero">
+        <div>
+          <h1 id="page-title"></h1>
+          <p id="page-desc"></p>
+        </div>
+        <div class="hero-actions">
+          <button class="btn ghost" id="ov-add-machine" type="button" data-t="overview.add_machine"></button>
+          <button class="btn light" id="ov-add-job" type="button" data-t="overview.add_job"></button>
+          <button class="btn light" id="add-btn" type="button" aria-expanded="false" aria-controls="job-form" hidden data-t="jobs.new"></button>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main class="content">
+  <div id="overview-view" style="display:flex;flex-direction:column;gap:20px">
+    <p class="error" id="ov-error" role="alert" hidden></p>
+    <div class="ov-top">
+      <section class="box">
+        <div class="box-head"><h2 data-t="overview.problems"></h2><span class="hint" id="ov-prob-note"></span></div>
+        <div id="ov-problems"></div>
+      </section>
+      <section class="box">
+        <div class="box-head"><h2 data-t="overview.machines"></h2><span class="hint" data-t="overview.last_seen"></span></div>
+        <div id="ov-machines"></div>
+      </section>
+    </div>
+    <div class="ov-bottom">
+      <section class="box">
+        <div class="box-head">
+          <h2 data-t="overview.runs"></h2>
+          <div class="ov-controls">
+            <div class="seg small" role="radiogroup" data-t-aria-label="overview.view">
+              <label><input type="radio" name="ov-mode" value="day" checked><span data-t="overview.mode_day"></span></label>
+              <label><input type="radio" name="ov-mode" value="14"><span data-t="overview.mode_14"></span></label>
+            </div>
+            <div class="daynav" id="ov-daynav">
+              <button type="button" id="ov-prev" data-t-aria-label="overview.prev_day">‹</button>
+              <span id="ov-day"></span>
+              <button type="button" id="ov-next" data-t-aria-label="overview.next_day">›</button>
+            </div>
+          </div>
+        </div>
+        <div id="ov-runs"></div>
+        <div class="legend" id="ov-legend"></div>
+      </section>
+      <section class="box">
+        <div class="box-head"><h2 data-t="overview.events"></h2><span class="hint" id="ov-events-day"></span></div>
+        <div id="ov-events"></div>
+      </section>
+    </div>
+  </div>
+
+  <div id="jobs-view" hidden style="display:flex;flex-direction:column;gap:20px">
+
+  <form class="box" id="job-form" hidden novalidate>
+    <h2 id="form-title"></h2>
+
+    <div class="field">
+      <label for="machine" data-t="common.machine"></label>
+      <select id="machine"><option value="" data-t="common.pick_machine"></option></select>
+    </div>
+    <div class="field">
+      <label for="source" data-t="form.source"></label>
+      <input class="path" type="text" id="source" data-t-placeholder="form.source_placeholder" autocomplete="off" spellcheck="false">
+    </div>
+    <div class="field">
+      <label for="target-type" data-t="form.target_type"></label>
+      <select id="target-type"></select>
+    </div>
+    <div class="field">
+      <label for="target" id="target-label" data-t="form.target"></label>
+      <input class="path" type="text" id="target" autocomplete="off" spellcheck="false">
+    </div>
+    <div class="row">
+      <fieldset class="field">
+        <div class="legend-row"><legend data-t="form.backup_type"></legend><button class="tip" type="button" data-t-aria-label="form.backup_type_about" data-t-tip="form.backup_type_tip">!</button></div>
+        <div class="seg" role="radiogroup" data-t-aria-label="form.backup_type">
+          <label><input type="radio" name="backup-type" value="full" checked><span data-t="backup_type.full"></span></label>
+          <label><input type="radio" name="backup-type" value="incremental"><span data-t="backup_type.incremental"></span></label>
+        </div>
+      </fieldset>
+      <fieldset class="field">
+        <div class="legend-row"><legend data-t="form.mode"></legend><button class="tip" type="button" data-t-aria-label="form.mode_about" data-t-tip="form.mode_tip">!</button></div>
+        <div class="seg" role="radiogroup" data-t-aria-label="form.mode">
+          <label><input type="radio" name="mode" value="copy" checked><span data-t="mode.copy"></span></label>
+          <label><input type="radio" name="mode" value="move"><span data-t="mode.move"></span></label>
+        </div>
+      </fieldset>
+    </div>
+    <fieldset class="field">
+      <div class="legend-row"><legend data-t="form.compression"></legend><button class="tip" type="button" data-t-aria-label="form.compression_about" data-t-tip="form.compression_tip">!</button></div>
+      <div class="seg" role="radiogroup" data-t-aria-label="form.compression">
+        <label><input type="radio" name="compression" value="none" checked><span data-t="compression.none"></span></label>
+        <label><input type="radio" name="compression" value="zip"><span data-t="compression.zip"></span></label>
+      </div>
+    </fieldset>
+
+    <div class="row">
+      <div class="field">
+        <label for="type" data-t="form.schedule"></label>
+        <select id="type">
+          <option value="daily" data-t="schedule.daily"></option>
+          <option value="weekly" data-t="schedule.weekly"></option>
+          <option value="interval" data-t="schedule.interval"></option>
+        </select>
+      </div>
+      <div class="field" id="time-field">
+        <label for="time" data-t="form.time"></label>
+        <input type="time" id="time" value="02:00">
+      </div>
+      <div class="field" id="minutes-field" hidden>
+        <label for="minutes" data-t="form.minutes"></label>
+        <input type="number" id="minutes" min="1" step="1" value="30">
+      </div>
+    </div>
+
+    <fieldset id="days-field" hidden>
+      <legend data-t="form.days"></legend>
+      <div class="days" id="days"></div>
+    </fieldset>
+
+    <p class="hint" id="schedule-hint"></p>
+    <p class="error" id="form-error" role="alert" hidden></p>
+
+    <div class="actions">
+      <button class="btn" type="button" id="cancel-btn" data-t="form.cancel"></button>
+      <button class="btn primary" type="submit" id="submit-btn" data-t="form.add"></button>
+    </div>
+  </form>
+
+  <p class="error" id="api-error" role="alert" hidden></p>
+
+  <section class="section-head" aria-labelledby="list-title">
+    <h2 id="list-title" data-t="jobs.list_title"></h2>
+    <span class="muted" id="count"></span>
+  </section>
+  <div class="box list" id="list"></div>
+
+  <div class="box">
+    <div class="code-head">
+      <span class="mono">config.json</span>
+      <div style="display:flex;align-items:center;gap:10px">
+        <span class="copied" id="copied" hidden data-t="jobs.copied"></span>
+        <button class="btn" type="button" id="copy-btn" data-t="jobs.copy"></button>
+      </div>
+    </div>
+    <pre id="config"></pre>
+  </div>
+  <p class="hint" data-t="jobs.preview_hint"></p>
+  </div>
+
+  <div id="logs-view" hidden style="display:flex;flex-direction:column;gap:16px">
+    <div class="filters">
+      <div class="field">
+        <label for="log-client" data-t="common.machine"></label>
+        <select id="log-client"><option value="" data-t="common.all"></option></select>
+      </div>
+      <div class="field">
+        <label for="log-level" data-t="logs.level"></label>
+        <select id="log-level">
+          <option value="" data-t="common.all"></option>
+          <option value="INFO" data-t="level.INFO"></option>
+          <option value="WARNING" data-t="level.WARNING"></option>
+          <option value="ERROR" data-t="level.ERROR"></option>
+        </select>
+      </div>
+    </div>
+    <p class="error" id="log-error" role="alert" hidden></p>
+    <div class="box logs" id="logs"></div>
+    <p class="hint" data-t="logs.hint"></p>
+  </div>
+
+  <div id="restore-view" hidden style="display:flex;flex-direction:column;gap:16px">
+    <div class="filters">
+      <div class="field">
+        <label for="restore-client" data-t="common.machine"></label>
+        <select id="restore-client"><option value="" data-t="common.pick_machine"></option></select>
+      </div>
+    </div>
+    <div id="restore-jobs" style="display:flex;flex-direction:column;gap:16px"></div>
+    <div class="box restore-foot" id="restore-foot" hidden>
+      <span class="hint" id="restore-count"></span>
+      <button class="btn primary" type="button" id="restore-download" data-t="restore.download"></button>
+    </div>
+  </div>
+
+  <div id="machines-view" hidden style="display:flex;flex-direction:column;gap:16px">
+    <form class="box pair-form" id="pair-form" novalidate>
+      <h2 style="font-size:15px;font-weight:600" data-t="machines.add_title"></h2>
+      <div class="filters">
+        <div class="field">
+          <label for="pair-code" data-t="machines.code"></label>
+          <input type="text" id="pair-code" class="path" data-t-placeholder="machines.code_placeholder" autocomplete="off" spellcheck="false">
+        </div>
+        <div class="field">
+          <label for="pair-name" data-t="machines.name"></label>
+          <input type="text" id="pair-name" data-t-placeholder="machines.name_placeholder" autocomplete="off" spellcheck="false">
+        </div>
+      </div>
+      <p class="hint" id="pair-hint"></p>
+      <p class="error" id="pair-error" role="alert" hidden></p>
+      <p class="ok-msg" id="pair-ok" role="status" hidden></p>
+      <div class="actions"><button class="btn primary" type="submit" data-t="machines.add"></button></div>
+    </form>
+    <p class="error" id="machine-error" role="alert" hidden></p>
+    <div class="box list" id="machine-list"></div>
+  </div>
+
+  <div id="settings-view" hidden style="display:flex;flex-direction:column;gap:16px">
+    <form class="box pair-form" id="email-form" novalidate>
+      <h2 style="font-size:15px;font-weight:600" data-t="settings.email_title"></h2>
+      <div class="field">
+        <label for="email" data-t="settings.email"></label>
+        <input type="email" id="email" data-t-placeholder="settings.email_placeholder" autocomplete="email" spellcheck="false">
+      </div>
+      <p class="hint" data-t="settings.email_hint"></p>
+      <p class="error" id="email-error" role="alert" hidden></p>
+      <p class="ok-msg" id="email-ok" role="status" hidden></p>
+      <div class="actions"><button class="btn primary" type="submit" data-t="common.save"></button></div>
+    </form>
+
+    <form class="box pair-form" id="password-form" novalidate>
+      <h2 style="font-size:15px;font-weight:600" data-t="settings.pw_title"></h2>
+      <div class="field">
+        <label for="pw-current" data-t="settings.pw_current"></label>
+        <input type="password" id="pw-current" autocomplete="current-password">
+      </div>
+      <div class="field">
+        <label for="pw-new" data-t="settings.pw_new"></label>
+        <input type="password" id="pw-new" autocomplete="new-password">
+      </div>
+      <div class="field">
+        <label for="pw-new2" data-t="settings.pw_new2"></label>
+        <input type="password" id="pw-new2" autocomplete="new-password">
+      </div>
+      <p class="hint" data-t="settings.pw_hint"></p>
+      <p class="error" id="pw-error" role="alert" hidden></p>
+      <p class="ok-msg" id="pw-ok" role="status" hidden></p>
+      <div class="actions"><button class="btn primary" type="submit" data-t="settings.pw_submit"></button></div>
+    </form>
+  </div>
+  </main>
+</div>
+
+<script src="/assets/app.js"></script>
+</body>
+</html>

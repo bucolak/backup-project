@@ -15,7 +15,7 @@ def folder_parts(target):
 def validate(item, svc):
     parts = folder_parts(item["target"])
     if not parts or any(part in (".", "..") for part in parts):
-        return "invalid pcloud folder: %r" % item["target"]
+        return "geçersiz pCloud klasörü: %r" % item["target"]
     return None
 
 
@@ -42,11 +42,11 @@ class Target:
     def check(self):
         # pCloud için yerel hedef klasörü yok; token ve pcloud_storage.py hazır mı ona bakılır
         if not os.path.exists(self.token_path):
-            return "pcloud token file not found: %s" % self.token_path
+            return "pCloud token dosyası bulunamadı: %s" % self.token_path
         try:
             import pcloud_storage  # noqa: F401
         except ImportError as error:
-            return "pcloud support is not ready (pcloud_storage.py or requests package missing): %s" % error
+            return "pCloud desteği hazır değil (pcloud_storage.py ya da requests paketi eksik): %s" % error
         return None
 
     def save(self, src, rel, info):
@@ -79,7 +79,7 @@ class Target:
         else:
             same = checksums["sha1"].lower() == sha1.hexdigest()
         if not same:
-            raise IOError("pCloud verification failed: " + self.display(rel))
+            raise IOError("pCloud doğrulaması başarısız: " + self.display(rel))
         return sha256.hexdigest(), sha1.hexdigest()
 
     def verify(self, rel, stored_hash):

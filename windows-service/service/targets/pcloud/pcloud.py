@@ -15,7 +15,7 @@ def folder_parts(target):
 def validate(item, svc):
     parts = folder_parts(item["target"])
     if not parts or any(part in (".", "..") for part in parts):
-        return "invalid pcloud folder: %r" % item["target"]
+        return svc.err("target.pcloud.invalid_folder", value=repr(item["target"]))
     return None
 
 
@@ -28,7 +28,7 @@ class Target:
 
     def storage(self):
         if self._storage is None:
-            from pcloud_storage import PCloudStorage
+            from .pcloud_storage import PCloudStorage
             self._storage = PCloudStorage(self.parts[0], token_file=self.token_path)
         return self._storage
 
@@ -42,11 +42,11 @@ class Target:
     def check(self):
         # pCloud için yerel hedef klasörü yok; token ve pcloud_storage.py hazır mı ona bakılır
         if not os.path.exists(self.token_path):
-            return "pcloud token file not found: %s" % self.token_path
+            return self.svc.err("target.pcloud.token_missing", path=self.token_path)
         try:
-            import pcloud_storage  # noqa: F401
+            from . import pcloud_storage  # noqa: F401
         except ImportError as error:
-            return "pcloud support is not ready (pcloud_storage.py or requests package missing): %s" % error
+            return self.svc.err("target.pcloud.not_ready", error=self.svc.error_info(error))
         return None
 
     def save(self, src, rel, info):
@@ -79,7 +79,7 @@ class Target:
         else:
             same = checksums["sha1"].lower() == sha1.hexdigest()
         if not same:
-            raise IOError("pCloud verification failed: " + self.display(rel))
+            raise svc.ServiceError("target.pcloud.verify_failed", target=self.display(rel))
         return sha256.hexdigest(), sha1.hexdigest()
 
     def verify(self, rel, stored_hash):

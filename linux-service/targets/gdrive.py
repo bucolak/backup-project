@@ -17,7 +17,7 @@ def folder_parts(target):
 def validate(item, svc):
     parts = folder_parts(item["target"])
     if not parts or any(part in (".", "..") for part in parts):
-        return "invalid gdrive folder: %r" % item["target"]
+        return "geçersiz Google Drive klasörü: %r" % item["target"]
     return None
 
 
@@ -51,11 +51,11 @@ class Target:
     def check(self):
         # Google Drive için yerel hedef klasörü yok; token ve drive_storage.py hazır mı ona bakılır
         if not os.path.exists(self.token_path):
-            return "Google Drive token file not found (run 'python drive_storage.py' once): %s" % self.token_path
+            return "Google Drive token dosyası bulunamadı (servis klasöründe bir kere 'python drive_storage.py' çalıştırılmalı): %s" % self.token_path
         try:
             import drive_storage  # noqa: F401
         except ImportError as error:
-            return "Google Drive support is not ready (drive_storage.py or Google packages missing): %s" % error
+            return "Google Drive desteği hazır değil (drive_storage.py ya da Google paketleri eksik): %s" % error
         return None
 
     def save(self, src, rel, info):
@@ -79,7 +79,7 @@ class Target:
         # Doğrulama: Drive'ın aldığı dosya için hesapladığı md5, bizimkiyle aynı mı?
         info["status"] = "verifying"
         if result.get("md5Checksum", "").lower() != md5.hexdigest():
-            raise IOError("Google Drive verification failed: " + self.display(rel))
+            raise IOError("Google Drive doğrulaması başarısız: " + self.display(rel))
         return sha256.hexdigest(), md5.hexdigest()
 
     def verify(self, rel, stored_hash):
@@ -127,7 +127,7 @@ class Target:
 
         file_id = self.find(self.parts[1:] + rel.split("/"))
         if not file_id:
-            raise FileNotFoundError("not found on Google Drive: " + rel)
+            raise FileNotFoundError("Google Drive'da bulunamadı: " + rel)
         with open(self.svc.lp(dest), "wb") as f:
             downloader = MediaIoBaseDownload(f, self.storage().service.files().get_media(fileId=file_id),
                                              chunksize=self.svc.CHUNK_SIZE)

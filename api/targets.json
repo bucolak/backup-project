@@ -1,0 +1,11 @@
+{
+  "local": {
+    "local_path": true
+  },
+  "pcloud": {
+    "local_path": false
+  },
+  "gdrive": {
+    "local_path": false
+  }
+}
